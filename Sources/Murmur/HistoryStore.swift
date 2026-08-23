@@ -16,7 +16,14 @@ struct HistoryEntry: Codable, Identifiable, Equatable {
 /// Persists the most recent transcripts, like Wispr Flow's history panel.
 final class HistoryStore {
     private(set) var entries: [HistoryEntry] = []
-    private let limit = 50
+    /// Bounded on two axes, whichever is hit first. Pure day-based
+    /// retention has no ceiling for a heavy user — dozens of short
+    /// dictations a day adds up fast — and a pure count cap doesn't
+    /// guarantee any particular time range is actually available, which is
+    /// what Home's day-grouped history list needs to be useful rather than
+    /// just "however many entries happened to fit."
+    private let retentionDays = 30
+    private let maxEntries = 500
     private var fileURL: URL {
         AppPaths.supportDirectory.appendingPathComponent("history.json")
     }
@@ -25,15 +32,29 @@ final class HistoryStore {
         if let data = try? Data(contentsOf: fileURL),
            let saved = try? JSONDecoder().decode([HistoryEntry].self, from: data) {
             entries = saved
+            // Entries can age past the retention window purely from time
+            // passing, with no new dictation to trigger a prune — catch
+            // that here too, not just in `add()`, so a file from before a
+            // long gap doesn't linger unpruned indefinitely.
+            prune()
+            save()
         }
     }
 
     func add(_ text: String, duration: TimeInterval? = nil) {
         entries.insert(HistoryEntry(text: text, date: Date(), duration: duration), at: 0)
-        if entries.count > limit {
-            entries.removeLast(entries.count - limit)
-        }
+        prune()
         save()
+    }
+
+    private func prune() {
+        if let cutoff = Calendar.current.date(
+            byAdding: .day, value: -retentionDays, to: Date()) {
+            entries.removeAll { $0.date < cutoff }
+        }
+        if entries.count > maxEntries {
+            entries.removeLast(entries.count - maxEntries)
+        }
     }
 
     func delete(id: String) {
@@ -57,5 +78,13 @@ final class HistoryStore {
         if let data = try? JSONEncoder().encode(entries) {
             try? data.write(to: fileURL, options: .atomic)
         }
+    }
+
+    /// Case-insensitive substring match, shared by Home's search field and
+    /// the `--history-search` CLI mode. An empty query returns everything.
+    static func matching(_ query: String, in entries: [HistoryEntry]) -> [HistoryEntry] {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return entries }
+        return entries.filter { $0.text.localizedCaseInsensitiveContains(trimmed) }
     }
 }

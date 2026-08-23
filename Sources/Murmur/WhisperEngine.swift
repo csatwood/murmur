@@ -37,18 +37,48 @@ final class WhisperEngine {
         readyModel == model
     }
 
-    /// True once all model files exist locally (no download needed).
+    /// Where WhisperKit unpacks its CoreML repos.
+    private var repoDirectory: URL {
+        modelsDirectory.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml", isDirectory: true)
+    }
+
+    /// Models confirmed present on disk. Only *positive* results are cached:
+    /// a model can finish downloading later, but a complete one never
+    /// becomes incomplete, so a `true` can never go stale.
+    private var downloadedModels: Set<String> = []
+
+    /// True once all three CoreML components exist locally (no download
+    /// needed).
+    ///
+    /// This is called from `whisperModelDetail` in the Settings view body,
+    /// which SwiftUI re-evaluates on every state change. The previous
+    /// implementation answered it with `subpathsOfDirectory` — a *deep*
+    /// enumeration of the whole model tree (~300 files, ~6ms of main-thread
+    /// I/O) — so simply having Settings open re-walked several gigabytes'
+    /// worth of directory entries continuously. This checks the three exact
+    /// paths instead, and remembers the answer.
     func isModelDownloaded(_ model: String) -> Bool {
-        guard let contents = try? FileManager.default.subpathsOfDirectory(
-            atPath: modelsDirectory.path) else { return false }
-        let required = ["AudioEncoder.mlmodelc", "TextDecoder.mlmodelc",
-                        "MelSpectrogram.mlmodelc"]
-        return required.allSatisfy { component in
-            contents.contains {
-                $0.contains(model) && $0.contains(component)
-                    && $0.hasSuffix("coremldata.bin")
+        if downloadedModels.contains(model) { return true }
+
+        let fileManager = FileManager.default
+        // WhisperKit prefixes most repo folders ("base" → "openai_whisper-base")
+        // but not all ("distil-whisper_distil-large-v3_turbo" is verbatim), so
+        // match on suffix rather than trying to reproduce the naming scheme.
+        guard let folders = try? fileManager.contentsOfDirectory(
+            atPath: repoDirectory.path),
+            let folder = folders.first(where: { $0 == model || $0.hasSuffix(model) })
+        else { return false }
+
+        let base = repoDirectory.appendingPathComponent(folder, isDirectory: true)
+        let complete = ["AudioEncoder", "TextDecoder", "MelSpectrogram"]
+            .allSatisfy { component in
+                fileManager.fileExists(atPath: base
+                    .appendingPathComponent("\(component).mlmodelc", isDirectory: true)
+                    .appendingPathComponent("coremldata.bin").path)
             }
-        }
+        if complete { downloadedModels.insert(model) }
+        return complete
     }
 
     /// Kicks off model load/download in the background.
@@ -66,8 +96,8 @@ final class WhisperEngine {
 
         let needsDownload = !isModelDownloaded(model)
         onStatus?(needsDownload
-            ? "Downloading Whisper model (one-time)…"
-            : "Loading Whisper model…")
+            ? "Downloading Whisper model (one-time)"
+            : "Loading Whisper model")
         let directory = modelsDirectory
         let task = Task { () -> WhisperKit in
             let config = WhisperKitConfig(
@@ -99,6 +129,12 @@ final class WhisperEngine {
         // Timestamps aren't needed for dictation — skipping them trims
         // decoding work. VAD chunking only pays off on long recordings.
         options.withoutTimestamps = true
+        // Already WhisperKit's own default (0.6, matching OpenAI's
+        // reference), but set explicitly rather than left implicit — this
+        // is what a segment's `noSpeechProb` gets compared against below,
+        // so the two numbers need to stay visibly in sync even if
+        // WhisperKit's own default ever changes.
+        options.noSpeechThreshold = Self.noSpeechThreshold
         if let audioFile = try? AVAudioFile(forReading: url),
            audioFile.fileFormat.sampleRate > 0 {
             let seconds = Double(audioFile.length) / audioFile.fileFormat.sampleRate
@@ -118,11 +154,31 @@ final class WhisperEngine {
             options.usePrefillPrompt = true
         }
 
-        onStatus?("Transcribing (Whisper)…")
+        onStatus?("Transcribing (Whisper)")
         defer { onStatus?(nil) }
         let results = try await pipe.transcribe(
             audioPath: url.path, decodeOptions: options)
-        return results.map(\.text).joined(separator: " ")
+        // `noSpeechThreshold` above only controls WhisperKit's internal
+        // decoding fallback (whether to retry at a different temperature)
+        // — nothing in WhisperKit itself drops a segment's text from
+        // `results.map(\.text)` just because it decided the segment was
+        // silence. A per-segment `noSpeechProb` filter used to be applied
+        // here too, on the same reasoning as the whisper.cpp engine — and
+        // removed for the same reason: measured unreliable against actual
+        // hallucinations (a confident "Thank you." scores near-zero, not
+        // uncertain), so a signal that weak had no safe margin left to
+        // also spare real trailing speech, and it was silently truncating
+        // genuine dictations. `HallucinationFilter` (whole-output phrase
+        // matching) and `AudioRecorder`'s sustained-signal gate already
+        // cover the silence case this was for.
+        return results
+            .flatMap(\.segments)
+            .map(\.text)
+            .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    /// OpenAI's own reference default — the value most is known about not
+    /// causing regressions on ordinary quiet-but-real speech.
+    private static let noSpeechThreshold: Float = 0.6
 }

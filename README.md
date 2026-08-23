@@ -16,11 +16,29 @@ speech and language models, with an optional local Whisper engine.
 
 - **Push-to-talk dictation** — hold `fn` (or right ⌥) anywhere; release to
   paste at your cursor. Double-tap for hands-free mode.
-- **Two recognition engines**, both offline:
+- **Three recognition engines**, all offline:
   - **Apple** — instant, built into macOS (SpeechAnalyzer, macOS 26).
-  - **Whisper** — optional precision engine via
+  - **WhisperKit** — precision engine via
     [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML on the
     Neural Engine). Your vocabulary is fed into the decoder prompt.
+  - **whisper.cpp** — Murmur's fastest engine, running Whisper models via
+    Metal on the GPU, with phrase-based filtering for the sign-off
+    hallucinations ("Thank you.", etc.) Whisper-family models are known to
+    produce on near-silent audio.
+- **Harper grammar pass** — [Harper](https://github.com/Automattic/harper)
+  runs alongside the Apple Intelligence edit pass below: deterministic,
+  millisecond-speed local linting (agreement, punctuation, repeated words)
+  that catches what an LLM edit occasionally misses. No model, no warm-up,
+  no network.
+- **Per-app profiles** — one place to set what Murmur does when you dictate
+  into a specific app: tone and note template together, instead of two
+  separate override systems answering "what happens in Slack?" differently.
+- **Ask Murmur** — ask questions about your own dictation history, answered
+  entirely on-device via lightweight keyword retrieval into the local model
+  (no embeddings, no network).
+- **Note templates** — restructure a transcript into a specific document
+  shape via the on-device LLM; trigger one by voice at the start of a
+  dictation, or apply manually.
 - **Pronunciation learning** — a Voice Training page learns how *you* say
   tricky words; corrections you make to transcripts are diffed and learned
   automatically; everything biases future recognition.
@@ -34,6 +52,8 @@ speech and language models, with an optional local Whisper engine.
 - **Dashboard** — history with search and correction-learning, usage stats
   (words, WPM, day streak), insights chart, a Voice Profile persona derived
   locally from what you dictate, scratchpad.
+- **Guided first run** — welcome → permissions → recognition engine →
+  hotkey → mic test, shown once.
 
 ## Requirements
 
@@ -85,13 +105,15 @@ stored only in `~/Library/Application Support/Murmur/`.
 
 ## Architecture
 
-Swift Package, one third-party dependency (WhisperKit, only if you use the
-Whisper engine):
+Swift Package. WhisperKit is a remote SwiftPM dependency, used only if you
+pick that engine; whisper.cpp/ggml and Harper are vendored as prebuilt
+xcframeworks under `Vendor/` (Harper's Rust source is included, whisper.cpp's
+isn't — see [NOTICE.md](NOTICE.md) for both).
 
 ```
-HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple) / WhisperEngine
+HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whisper.cpp)
                                         ↓
-     TextFormatter → LearnedStore → SnippetStore → RewriteEngine (Styles)
+     TextFormatter → LearnedStore → SnippetStore → RewriteEngine (Styles) → HarperChecker
                                         ↓
                         TextInserter (clipboard + ⌘V)
 ```

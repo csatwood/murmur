@@ -3,6 +3,7 @@
 build/
 DerivedData/
 *.xcodeproj
+Vendor/harper-ffi/target/
 
 # Machine-local tool config (contains local paths)
 .claude/
@@ -14,3 +15,8 @@ DerivedData/
 *.p12
 *.pem
 *.cer
+*.p8
+*.mobileprovision
+
+# Xcode-generated SPM state, not the Package.swift-managed sources
+.swiftpm/

@@ -1,18 +1,27 @@
 import AppKit
 import AVFoundation
 import Foundation
+import OSLog
 import SwiftUI
+import UserNotifications
+
+/// Dictation-path tracing. The pipeline runs entirely while the app's own
+/// window is hidden behind whatever you're dictating into, so when it
+/// stalls there is otherwise nothing at all to inspect — read it back with:
+/// `log show --predicate 'subsystem == "local.murmur"' --last 10m`
+let dictationLog = Logger(subsystem: "local.murmur", category: "dictation")
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
+    UNUserNotificationCenterDelegate, ObservableObject {
 
     enum UIState {
         case idle, recording, processing
     }
 
     // Observable state for the dashboard window.
-    @Published var uiState: UIState = .idle { didSet { updateIcon() } }
-    @Published var isHandsFree = false
+    @Published var uiState: UIState = .idle { didSet { updateIcon(); updateHUD() } }
+    @Published var isHandsFree = false { didSet { updateHUD() } }
     @Published var entries: [HistoryEntry] = []
     @Published var micAuthorized = false
     @Published var axTrusted = false
@@ -20,29 +29,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var localeID: String = Settings.locale.identifier
     @Published var lastError: String?
 
+    /// Height of the custom titlebar strip drawn in SwiftUI; the traffic
+    /// lights are aligned to its vertical center.
+    static let titlebarHeight: CGFloat = 44
+    /// AppKit's own y for the traffic lights, captured before any change.
+    private var trafficLightBaselineY: CGFloat?
+
     private var statusItem: NSStatusItem!
     private var window: NSWindow?
+    private var onboardingWindow: NSWindow?
+    private let navBarHUD = NavBarHUDController()
     private let recorder = AudioRecorder()
     private let history = HistoryStore()
     private var transcriber = Transcriber(locale: Settings.locale)
     private lazy var hotkeyMonitor = HotkeyMonitor(hotkey: Settings.hotkey)
+    private lazy var profileHotkeyMonitor = ProfileHotkeyMonitor()
     let rewriteEngine = RewriteEngine()
     let whisperEngine = WhisperEngine()
+    let whisperCppEngine = WhisperCppEngine()
     @Published var engine: String = Settings.engine
     @Published var whisperModel: String = Settings.whisperModel
     @Published var whisperReady = false
+    @Published var whisperCppModel: String = Settings.whisperCppModel
+    @Published var whisperCppReady = false
     @Published var voiceProfile: VoiceProfile? = VoiceProfileStore.load()
+    @Published var appearance: AppearanceSetting = Settings.appearance
     private(set) lazy var transformManager = TransformManager(engine: rewriteEngine)
 
     /// Extra status line shown in the top bar while a transform runs.
-    @Published var transformStatus: String?
+    @Published var transformStatus: String? { didSet { updateHUD() } }
+    /// Set when a History row is sent to Templates; the Templates page
+    /// picks it up and clears it.
+    @Published var pendingTemplateText: String?
+    /// Set when a notification click (or other outside prompt) should jump
+    /// the dashboard to a specific page; `AppShellRoot` picks it up and
+    /// clears it, mirroring `pendingTemplateText`.
+    @Published var pendingNavigateToPage: Page?
+
+    private let statusHUD = StatusHUDController()
+
+    /// Mirrors the app's live state onto the floating HUD, which is the only
+    /// status visible while dictating into another app — the main window is
+    /// behind it. Reads three properties; called from all three `didSet`s.
+    private func updateHUD() {
+        let state: HUDState
+        switch uiState {
+        case .recording:
+            state = .recording(handsFree: isHandsFree)
+        case .processing:
+            state = .processing(transformStatus ?? "Transcribing")
+        case .idle:
+            // A transform (⌥1/⌥2) runs with no recording in flight, so idle
+            // plus a status line still means work is happening.
+            state = transformStatus.map { .processing($0) } ?? .hidden
+        }
+        // Deferred, never inline. These observers fire during a @Published
+        // change — i.e. in the middle of SwiftUI's own update pass — and
+        // building an NSHostingView/NSPanel there would start a nested
+        // SwiftUI update on the same actor. Hopping to the next main-actor
+        // turn keeps all window work out of that cycle.
+        Task { @MainActor [statusHUD, navBarHUD, weak self] in
+            statusHUD.update(state)
+            // The nav bar only exists while the status HUD doesn't — same
+            // `state == .hidden` check that decides the pill, not a raw
+            // idle read, so a transform running with no recording in
+            // flight (⌥1/⌥2) correctly hides the nav bar too.
+            if let self { navBarHUD.setActive(state == .hidden, app: self) }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        FontLoader.registerManrope()
+        // `appearance`'s stored value only ever reached `NSApp.appearance`
+        // from `setAppearance`, i.e. only once the user re-picked it from
+        // Settings in that session — a fresh launch left `NSApp.appearance`
+        // at its default (follow system) regardless of what "Light"/"Dark"
+        // had been saved. Applying it here, before any window exists, is
+        // what actually makes the persisted choice take effect from launch.
+        setAppearance(appearance)
         entries = history.entries
         setUpStatusItem()
-        refreshPermissions(promptAccessibility: true)
+        UNUserNotificationCenter.current().delegate = self
+        // First run asks for these itself, at the moment `OnboardingRoot`'s
+        // own permission step explains why — not silently the instant the
+        // process launches, before that screen has even drawn.
+        refreshPermissions(promptAccessibility: Settings.hasCompletedOnboarding)
         wireHotkey()
         hotkeyMonitor.startMonitoring()
+        // `updateHUD` only runs on later `uiState` changes, not this
+        // property's own initial value — the nav bar's default-visible
+        // state needs this explicit kick to exist from launch, same as
+        // the hotkey monitor already runs regardless of onboarding.
+        navBarHUD.setActive(true, app: self)
+        profileHotkeyMonitor.onTrigger = { [weak self] slot in
+            DispatchQueue.main.async { self?.handleProfileHotkey(slot) }
+        }
+        profileHotkeyMonitor.startMonitoring()
         transformManager.onStatus = { [weak self] status in
             self?.transformStatus = status
         }
@@ -58,17 +140,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     model: Settings.whisperModel)
             }
         }
+        whisperCppEngine.onStatus = { [weak self] status in
+            Task { @MainActor in
+                guard let self else { return }
+                self.transformStatus = status
+                self.whisperCppReady = self.whisperCppEngine.isReady(
+                    model: Settings.whisperCppModel)
+            }
+        }
         if Settings.engine == "whisper" {
             whisperEngine.preload(model: Settings.whisperModel)
+        } else if Settings.engine == "whispercpp" {
+            whisperCppEngine.preload(model: Settings.whisperCppModel)
         }
-        showMainWindow()
-
-        Task {
-            micAuthorized = await AudioRecorder.requestMicrophoneAccess()
+        if Settings.hasCompletedOnboarding {
+            showMainWindow()
+            Task {
+                micAuthorized = await AudioRecorder.requestMicrophoneAccess()
+            }
+        } else {
+            showOnboarding()
         }
         // Warm up the on-device speech model in the background.
         Task.detached { [transcriber] in
             try? await transcriber.ensureModelInstalled()
+        }
+        // Same idea for the rewrite model — so the first dictation's
+        // cleanup pass isn't the one paying the cold-start cost.
+        if rewriteEngine.isAvailable {
+            Task.detached { [rewriteEngine] in
+                rewriteEngine.prewarm()
+            }
         }
         refreshVoiceProfileIfDue()
     }
@@ -95,11 +197,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         return true
     }
 
+    /// whisper.cpp's Metal backend keeps a static C++ registry of Metal
+    /// devices. Something in its cleanup path aborts when that registry's
+    /// destructor runs during normal process exit — `exit()` finalizes C++
+    /// static-storage objects after AppKit has already begun tearing down,
+    /// and ggml's Metal teardown doesn't tolerate that ordering. It only
+    /// fires once whisper.cpp has actually been used this session, but from
+    /// then on it hits on every ordinary quit — confirmed via a real crash
+    /// report (`ggml_metal_rsets_free` → `ggml_abort` → SIGABRT, inside the
+    /// vector-of-devices destructor called from `__cxa_finalize_ranges`).
+    ///
+    /// The bug is inside the vendored library, not this app's code, so
+    /// rather than let AppKit's normal `terminate:` → `exit()` path reach
+    /// that destructor at all, everything this app actually needs saved is
+    /// flushed here and the process ends immediately via `_exit`, which
+    /// skips atexit handlers and C++ static destructors entirely. Every
+    /// termination route — Cmd+Q, the Quit menu item, an AppleEvent, and
+    /// `relaunch()`'s `NSApp.terminate(nil)` — funnels through this one
+    /// delegate method first, so this is the single place that needs it.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        UserDefaults.standard.synchronize()
+        _exit(0)
+    }
+
+    // MARK: - Onboarding
+
+    func showOnboarding() {
+        let hosting = NSHostingController(
+            rootView: OnboardingRoot(app: self) { [weak self] in
+                self?.completeOnboarding()
+            })
+        hosting.sizingOptions = []
+        let onboarding = NSWindow(contentViewController: hosting)
+        onboarding.styleMask = [.titled, .closable, .fullSizeContentView]
+        onboarding.titleVisibility = .hidden
+        onboarding.titlebarAppearsTransparent = true
+        // Pinned light regardless of the system/app appearance — by
+        // request, and the same idea as `Palette.rail` always staying
+        // dark: one deliberately fixed surface, this time the other
+        // direction. `Palette`'s colors resolve dynamically off the
+        // *window's* effective appearance, so overriding it here is
+        // enough; nothing in `OnboardingRoot` itself needs to change.
+        onboarding.appearance = NSAppearance(named: .aqua)
+        onboarding.setContentSize(NSSize(width: 600, height: 780))
+        onboarding.isReleasedWhenClosed = false
+        onboarding.center()
+        onboardingWindow = onboarding
+        NSApp.activate(ignoringOtherApps: true)
+        onboarding.makeKeyAndOrderFront(nil)
+    }
+
+    private func completeOnboarding() {
+        Settings.hasCompletedOnboarding = true
+        refreshPermissions()
+        onboardingWindow?.close()
+        onboardingWindow = nil
+        showMainWindow()
+    }
+
     // MARK: - Main window
 
     func showMainWindow() {
         if window == nil {
-            let hosting = NSHostingController(rootView: MainView(app: self))
+            let hosting = NSHostingController(rootView: AppShellRoot(app: self))
+            // By default a hosting controller pushes its SwiftUI content's
+            // ideal size up to the window, so a long transcript list would
+            // stretch the window to fit rather than scrolling inside it.
+            // The window's size belongs to the user; content scrolls within.
+            hosting.sizingOptions = []
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "Murmur"
             newWindow.styleMask = [
@@ -110,13 +275,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             newWindow.setContentSize(NSSize(width: 1180, height: 840))
             newWindow.minSize = NSSize(width: 900, height: 600)
             newWindow.isReleasedWhenClosed = false
+            newWindow.delegate = self
             newWindow.center()
             window = newWindow
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        alignTrafficLights()
         refreshPermissions()
     }
+
+    /// macOS centers the traffic lights for its own 28pt titlebar, putting
+    /// them 16pt below the window top. Our titlebar strip is 44pt, so its
+    /// content — the status pill, the bell — centers at 22pt, leaving the
+    /// buttons sitting visibly high. Nudge the buttons onto the same line.
+    ///
+    /// Works off AppKit's own baseline captured once, rather than measuring
+    /// across view hierarchies: the buttons live in the window's theme
+    /// frame, not in contentView, so converting between the two produces
+    /// meaningless offsets (which previously pushed them out of sight).
+    private func alignTrafficLights() {
+        guard let window else { return }
+        let buttons = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+        guard let reference = buttons.first else { return }
+
+        // Capture AppKit's unmodified layout the first time only.
+        if trafficLightBaselineY == nil {
+            trafficLightBaselineY = reference.frame.origin.y
+        }
+        guard let baseline = trafficLightBaselineY else { return }
+
+        // Titlebar content centers at 22pt; AppKit centers buttons at 16pt.
+        // NSView is bottom-up, so subtracting moves them down.
+        let target = baseline - (Self.titlebarHeight / 2 - 16)
+        for button in buttons where abs(button.frame.origin.y - target) > 0.5 {
+            button.frame.origin.y = target
+        }
+    }
+
+    // AppKit re-lays out the titlebar on these, undoing the alignment.
+    func windowDidResize(_ notification: Notification) { alignTrafficLights() }
+    func windowDidExitFullScreen(_ notification: Notification) { alignTrafficLights() }
+    func windowDidBecomeKey(_ notification: Notification) { alignTrafficLights() }
 
     // MARK: - Permissions
 
@@ -129,6 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
         micAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         whisperReady = whisperEngine.isReady(model: Settings.whisperModel)
+        whisperCppReady = whisperCppEngine.isReady(model: Settings.whisperCppModel)
     }
 
     // MARK: - Settings changes (from window or menu)
@@ -140,11 +342,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         rebuildMenu()
     }
 
+    /// Applies the chosen theme app-wide. `nil` hands control back to
+    /// macOS, so the app follows the system — including live switching
+    /// when the system is set to Auto.
+    func setAppearance(_ newValue: AppearanceSetting) {
+        Settings.appearance = newValue
+        appearance = newValue
+        NSApp.appearance = newValue.nsAppearance
+    }
+
     func setEngine(_ newEngine: String) {
         Settings.engine = newEngine
         engine = newEngine
         if newEngine == "whisper" {
             whisperEngine.preload(model: Settings.whisperModel)
+        } else if newEngine == "whispercpp" {
+            whisperCppEngine.preload(model: Settings.whisperCppModel)
         }
     }
 
@@ -153,6 +366,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         whisperModel = model
         if Settings.engine == "whisper" {
             whisperEngine.preload(model: model)
+        }
+    }
+
+    func setWhisperCppModel(_ model: String) {
+        Settings.whisperCppModel = model
+        whisperCppModel = model
+        if Settings.engine == "whispercpp" {
+            whisperCppEngine.preload(model: model)
         }
     }
 
@@ -244,6 +465,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 lastError = "Whisper model is still preparing — used Apple " +
                     "engine for this dictation. Whisper takes over when ready."
             }
+        } else if Settings.engine == "whispercpp" {
+            if whisperCppEngine.isReady(model: Settings.whisperCppModel) {
+                do {
+                    return try await whisperCppEngine.transcribe(
+                        fileAt: url, model: Settings.whisperCppModel,
+                        localeID: Settings.localeIdentifier, biasTerms: biasTerms)
+                } catch {
+                    lastError = "whisper.cpp engine failed " +
+                        "(\(error.localizedDescription)) — used Apple engine instead."
+                }
+            } else {
+                whisperCppEngine.preload(model: Settings.whisperCppModel)
+                lastError = "whisper.cpp model is still preparing — used Apple " +
+                    "engine for this dictation. whisper.cpp takes over when ready."
+            }
         }
         return try await transcriber.transcribe(fileAt: url, biasTerms: biasTerms)
     }
@@ -261,6 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             DispatchQueue.main.async {
                 self?.recorder.cancel()
                 self?.uiState = .idle
+                self?.activeProfileHotkeySlot = nil
             }
         }
         hotkeyMonitor.onHandsFreeChange = { [weak self] active in
@@ -274,14 +511,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     private var recordingStartedAt: Date?
     private var recordingTargetBundleID: String?
+    /// Captured alongside the bundle ID rather than looked up again later —
+    /// by the time a dictation finishes and a discovery notification might
+    /// fire, the target app could have quit, and `localizedName` needs it
+    /// still running.
+    private var recordingTargetAppName: String?
+    /// Set only when a profile hotkey force-started this recording. Kept
+    /// separate from `recordingTargetBundleID` rather than overwriting it:
+    /// the discovery-prompt check further down still needs to know the
+    /// *actually* frontmost app, not the forced one, or it would silently
+    /// stop pitching a profile for whatever app genuinely has none yet.
+    private var recordingForcedBundleID: String?
+    /// Which profile-hotkey slot (if any) started the current recording, so
+    /// a *different* slot pressed mid-recording is a no-op instead of
+    /// stopping a dictation some other slot started.
+    private var activeProfileHotkeySlot: ProfileHotkeySlot?
 
-    private func startRecording() {
+    private func startRecording(forcedBundleID: String? = nil) {
         guard uiState != .recording else { return }
         do {
             try recorder.start()
             recordingStartedAt = Date()
-            recordingTargetBundleID =
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            let frontmost = NSWorkspace.shared.frontmostApplication
+            recordingTargetBundleID = frontmost?.bundleIdentifier
+            recordingTargetAppName = frontmost?.localizedName
+            recordingForcedBundleID = forcedBundleID
             uiState = .recording
             lastError = nil
             NSSound(named: "Pop")?.play()
@@ -289,6 +543,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             lastError = "Could not start recording: \(error.localizedDescription)"
             NSSound(named: "Basso")?.play()
         }
+    }
+
+    /// Handles a Control+Shift+digit press: forces a dictation resolved
+    /// against whichever profile owns this slot, regardless of the
+    /// frontmost app. A toggle, not hold-to-talk — the same slot pressed
+    /// again stops the recording it started; a different slot pressed while
+    /// any dictation is already active is a no-op, so one profile hotkey
+    /// can never yank away a recording a different mechanism started.
+    private func handleProfileHotkey(_ slot: ProfileHotkeySlot) {
+        if uiState == .recording {
+            guard activeProfileHotkeySlot == slot else { return }
+            stopAndTranscribe()
+            return
+        }
+        guard uiState == .idle else { return }
+        guard let bundleID = AppProfileStore.profiles.first(
+            where: { $0.value.hotkeySlot == slot })?.key
+        else { return }
+        activeProfileHotkeySlot = slot
+        startRecording(forcedBundleID: bundleID)
     }
 
     private func stopAndTranscribe() {
@@ -303,31 +577,158 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         recordingStartedAt = nil
         let targetBundleID = recordingTargetBundleID
         recordingTargetBundleID = nil
+        let targetAppName = recordingTargetAppName
+        recordingTargetAppName = nil
+        // Style/template resolve against the forced bundle ID when a
+        // profile hotkey started this recording, but `targetBundleID`
+        // itself stays the *actually* frontmost app for the discovery
+        // prompt below, which needs to know what's really missing a
+        // profile — not what was just force-resolved to one that exists.
+        let resolvedBundleID = recordingForcedBundleID ?? targetBundleID
+        recordingForcedBundleID = nil
+        activeProfileHotkeySlot = nil
+
+        let frames = recorder.capturedFrames
+        let rate = recorder.capturedFormat?.sampleRate ?? 0
+        dictationLog.info("stop: \(frames) frames @ \(rate, format: .fixed(precision: 0)) Hz")
+        guard frames > 0 else {
+            // The microphone delivered nothing at all. Previously this still
+            // went to the recognizer, which returned an empty string, and the
+            // whole dictation vanished with no explanation.
+            dictationLog.error("stop: NO AUDIO CAPTURED")
+            lastError = "No audio was captured — the microphone delivered "
+                + "nothing. If you're on Bluetooth headphones, try switching "
+                + "input to the built-in microphone."
+            NSSound(named: "Basso")?.play()
+            uiState = .idle
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        guard recorder.hasSignal else {
+            // Frames exist (room tone, mic self-noise) but no real speech —
+            // pressing the key and releasing it without saying anything.
+            // Whisper models hallucinate on exactly this: fed silence, they
+            // fill it in with a sign-off phrase like "Thank you." rather
+            // than admitting there's nothing there, because their training
+            // data is full of transcripts that end that way. Skipping the
+            // recognizer entirely here is what actually fixes it — no
+            // amount of prompting talks a model out of a pattern this deep
+            // in its training.
+            dictationLog.info("stop: no speech detected, skipping recognition")
+            uiState = .idle
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
 
         Task { [history, rewriteEngine] in
             defer { try? FileManager.default.removeItem(at: url) }
             do {
+                dictationLog.info("recognize: start")
                 let raw = try await recognize(fileAt: url)
-                var formatted = TextFormatter().format(raw)
-                formatted = LearnedStore.apply(in: formatted)
-                formatted = SnippetStore.expand(in: formatted)
+                dictationLog.info("recognize: done, \(raw.count) chars")
 
-                // Per-app style: rewrite tone on-device (Apple Intelligence).
-                let style = StyleSettings.style(forBundleID: targetBundleID)
-                if let instructions = style.instructions,
-                   !formatted.isEmpty,
-                   rewriteEngine.isAvailable {
-                    transformStatus = "Applying \(style.displayName) style…"
-                    if let rewritten = try? await rewriteEngine.rewrite(
-                        formatted, instructions: instructions),
-                       !rewritten.isEmpty {
-                        formatted = rewritten
-                    }
-                    transformStatus = nil
+                // Whisper-family engines hallucinate a small, specific set
+                // of sign-off phrases ("Thank you.") on near-silent audio
+                // that still clears the earlier signal-duration gate — the
+                // model's own confidence score doesn't catch this (measured:
+                // ~0.00002 "no speech" probability on a confidently
+                // hallucinated "Thank you."), so the output itself is
+                // checked directly. Caught here, before any further
+                // processing spends time or an LLM call on text that's
+                // about to be discarded anyway.
+                guard !HallucinationFilter.isLikelyHallucination(raw) else {
+                    dictationLog.error(
+                        "recognize: discarded as a likely hallucination: \(raw, privacy: .public)")
+                    uiState = .idle
+                    return
                 }
+
+                let style = AppProfileStore.style(forBundleID: resolvedBundleID)
+                dictationLog.info("style resolved: \(style.rawValue, privacy: .public)")
+
+                var formatted: String
+                if style.skipsAllProcessing {
+                    // Raw: exact words, no cleanup, no AI. For terminals and
+                    // code editors, where "corrections" would be corruption.
+                    formatted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    formatted = LearnedStore.apply(in: formatted)
+                    formatted = SnippetStore.expand(in: formatted)
+                } else {
+                    formatted = TextFormatter().format(raw)
+                    formatted = LearnedStore.apply(in: formatted)
+                    formatted = SnippetStore.expand(in: formatted)
+
+                    // Everything below needs the model, and the spoken
+                    // trigger must not be stripped out of the text unless
+                    // something is actually going to act on it.
+                    if !formatted.isEmpty, rewriteEngine.isAvailable {
+                        // A spoken trigger ("meeting notes, we discussed…")
+                        // beats the app's standing rule: it's an explicit
+                        // request for this one dictation.
+                        var template: NoteTemplate?
+                        var body = formatted
+                        if Settings.voiceTemplatesEnabled,
+                           let match = NoteTemplateStore.matchVoiceTrigger(in: formatted) {
+                            template = match.template
+                            body = match.remainder
+                        } else {
+                            template = AppProfileStore.template(forBundleID: resolvedBundleID)
+                        }
+
+                        // Structure and tone go in together. Running them as
+                        // separate passes meant a template silently threw the
+                        // app's style away; composing them keeps both for the
+                        // price of one round-trip.
+                        if let instructions = RewritePlan.instructions(
+                            template: template, style: style,
+                            voice: Settings.useVoiceProfile ? voiceProfile : nil),
+                           !body.isEmpty {
+                            // "Applying As spoken style…" read oddly once
+                            // this became the always-on default cleanup pass
+                            // rather than something the user explicitly set.
+                            transformStatus = template.map { "Formatting as \($0.name)" }
+                                ?? (style == .none
+                                    ? "Cleaning up"
+                                    : "Applying \(style.displayName) style")
+                            if let rewritten = try? await rewriteEngine.edit(
+                                body, instructions: instructions), !rewritten.isEmpty {
+                                // The rewrite prompt is hardened against this, but
+                                // model output isn't deterministic — a real incident
+                                // produced a fabricated paragraph from a 3-word
+                                // dictation ("In this section." → 300+ characters
+                                // describing "the author"'s writing style, lifted
+                                // from the Voice Profile context). Templates
+                                // legitimately restructure and can grow the text by
+                                // design, so this only guards the no-template case,
+                                // where a cleanup/style pass has no reason to
+                                // multiply the input's length.
+                                let plausibleLimit = max(body.count * 3, body.count + 80)
+                                if template != nil || rewritten.count <= plausibleLimit {
+                                    formatted = rewritten
+                                } else {
+                                    dictationLog.error(
+                                        "rewrite rejected: \(body.count) chars in, \(rewritten.count) chars out — keeping unrewritten text")
+                                }
+                            }
+                            transformStatus = nil
+                        }
+                    }
+
+                    // A fast, local, deterministic grammar pass — runs after
+                    // the LLM step (catching whatever it missed) but doesn't
+                    // depend on it: Harper needs no Apple Intelligence, so
+                    // this still improves grammar on Macs where the pass
+                    // above was skipped entirely. Milliseconds, not worth a
+                    // status message next to a multi-second LLM round-trip.
+                    if !formatted.isEmpty {
+                        formatted = HarperChecker.fix(formatted)
+                    }
+                }
+                dictationLog.info("pipeline done: \(formatted.count) chars")
                 if !formatted.isEmpty {
                     history.add(formatted, duration: duration)
                     entries = history.entries
+                    dictationLog.info("history: added, inserting text")
                     refreshVoiceProfileIfDue()
                     if AXIsProcessTrusted() {
                         TextInserter.insert(formatted)
@@ -343,13 +744,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                         NSSound(named: "Basso")?.play()
                     }
                     rebuildMenu()
+
+                    // Contextual discovery: the first time a dictation lands
+                    // in an app with no App Profile, offer to set one up
+                    // right there — the strongest form of discovery, since
+                    // it doesn't wait for the user to find a settings page.
+                    if let targetBundleID, let targetAppName,
+                       AppProfileStore.profile(forBundleID: targetBundleID) == nil,
+                       !Settings.promptedBundleIDs.contains(targetBundleID) {
+                        promptForAppProfile(bundleID: targetBundleID, appName: targetAppName)
+                    }
+                } else {
+                    // Previously a silent no-op: nothing pasted, nothing in
+                    // History, and no indication anything had gone wrong —
+                    // indistinguishable from the app being broken.
+                    lastError = "Nothing was transcribed — the recording came "
+                        + "through empty. Check the microphone is picking you up."
+                    NSSound(named: "Basso")?.play()
                 }
             } catch {
+                dictationLog.error("FAILED: \(error.localizedDescription, privacy: .public)")
                 lastError = "Transcription failed: \(error.localizedDescription)"
                 NSSound(named: "Basso")?.play()
             }
             uiState = .idle
+            dictationLog.info("idle")
         }
+    }
+
+    /// Offers to set up an App Profile the first time dictation lands in an
+    /// app that doesn't have one. `Settings.promptedBundleIDs` is written
+    /// immediately, before the (async) authorization request even resolves,
+    /// so this fires at most once per app, ever, no matter what the user
+    /// decides. Notification permission itself is requested lazily, right
+    /// before this first real use, rather than proactively at launch — most
+    /// users may go a whole session without ever hitting the condition.
+    private func promptForAppProfile(bundleID: String, appName: String) {
+        Settings.promptedBundleIDs.insert(bundleID)
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound]))
+                ?? false
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Format for \(appName) automatically?"
+            content.body = "Murmur can give \(appName) its own tone and structure — "
+                + "set it up once and every dictation there uses it."
+            let request = UNNotificationRequest(
+                identifier: "app-profile-suggestion-\(bundleID)",
+                content: content, trigger: nil)
+            try? await center.add(request)
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    /// Murmur has no Dock icon and its window is usually hidden behind
+    /// whatever app you dictated into, but on the rare occasion it *is*
+    /// frontmost, the discovery notification should still show as a banner
+    /// rather than being silently suppressed as "app is already active".
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler:
+            @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        Task { @MainActor [weak self] in
+            self?.showMainWindow()
+            self?.pendingNavigateToPage = .appProfiles
+        }
+        completionHandler()
     }
 
     // MARK: - Status item / menu
@@ -431,6 +903,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 }
 
+/// The app's theme: follow macOS, or pin light/dark regardless of it.
+enum AppearanceSetting: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    /// `nil` means "don't override" — the app then tracks the system
+    /// setting, including automatic light/dark switching.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 enum Settings {
     private static let defaults = UserDefaults.standard
 
@@ -447,6 +944,12 @@ enum Settings {
                 defaults.set(value, forKey: key)
             }
         }
+    }
+
+    /// Gates first-run setup — `OnboardingRoot` vs the normal main window.
+    static var hasCompletedOnboarding: Bool {
+        get { defaults.bool(forKey: "hasCompletedOnboarding") }
+        set { defaults.set(newValue, forKey: "hasCompletedOnboarding") }
     }
 
     static var hotkey: HotkeyMonitor.Hotkey {
@@ -471,6 +974,77 @@ enum Settings {
     static var whisperModel: String {
         get { defaults.string(forKey: "whisperModel") ?? "small" }
         set { defaults.set(newValue, forKey: "whisperModel") }
+    }
+
+    /// Separate from `whisperModel`: WhisperKit and whisper.cpp have
+    /// different, only-partially-overlapping model ID namespaces (WhisperKit
+    /// has "distil-whisper_distil-large-v3_turbo", whisper.cpp doesn't; vice
+    /// versa for "tiny"). Sharing one setting would carry over an invalid ID
+    /// whenever the user switched between the two Whisper engines.
+    static var whisperCppModel: String {
+        get { defaults.string(forKey: "whisperCppModel") ?? "small" }
+        set { defaults.set(newValue, forKey: "whisperCppModel") }
+    }
+
+    /// Say a template's trigger phrase ("meeting notes", "email draft", …)
+    /// at the start of a dictation to reshape it automatically — no clicks.
+    static var voiceTemplatesEnabled: Bool {
+        get { defaults.object(forKey: "voiceTemplatesEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "voiceTemplatesEnabled") }
+    }
+
+    /// The nav rail's pinned/expanded state. Defaults to fully open on
+    /// first launch — an icon-only rail with hidden groups is a reasonable
+    /// compact mode for someone who already knows their way around, but a
+    /// poor first impression that hides App Profiles (and everything else)
+    /// behind an undiscovered toggle. Once the user sets their own
+    /// preference it's respected on every later launch, not fought.
+    static var railPinned: Bool {
+        get { defaults.object(forKey: "railPinned") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "railPinned") }
+    }
+
+    /// Personalize (Dictionary, Voice Profile, Style, App Profiles) starts
+    /// expanded — it's where the app's most differentiating, least
+    /// discoverable feature lives.
+    static var personaliseExpanded: Bool {
+        get { defaults.object(forKey: "personaliseExpanded") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "personaliseExpanded") }
+    }
+
+    /// Tools (Snippets, Templates, Transforms) starts collapsed — more
+    /// advanced, no need to front-load everything at once.
+    static var toolsExpanded: Bool {
+        get { defaults.object(forKey: "toolsExpanded") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "toolsExpanded") }
+    }
+
+    /// Bundle IDs already offered an App Profile via the contextual
+    /// discovery notification — written once per ID so it fires at most
+    /// once per app, ever, not every time you dictate into it again.
+    static var promptedBundleIDs: Set<String> {
+        get {
+            guard let stored = defaults.string(forKey: "promptedBundleIDs"), !stored.isEmpty
+            else { return [] }
+            return Set(stored.split(separator: ",").map(String.init))
+        }
+        set {
+            defaults.set(newValue.sorted().joined(separator: ","), forKey: "promptedBundleIDs")
+        }
+    }
+
+    /// Feed the generated Voice Profile to rewrites and Ask, so output keeps
+    /// the user's own phrasing. Opt-out because it changes every rewrite.
+    static var useVoiceProfile: Bool {
+        get { defaults.object(forKey: "useVoiceProfile") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "useVoiceProfile") }
+    }
+
+    /// Light / Dark / follow the system. Stored as a raw string so an
+    /// unknown value degrades to `.system` rather than crashing.
+    static var appearance: AppearanceSetting {
+        get { AppearanceSetting(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system }
+        set { defaults.set(newValue.rawValue, forKey: "appearance") }
     }
 
     static var locale: Locale {

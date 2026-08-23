@@ -6,9 +6,24 @@ import Foundation
 struct VoiceProfile: Codable, Equatable {
     var title: String
     var summary: String
+    /// Short style tags (`.chip-row`), e.g. "Detailed", "Frequent pauses".
+    /// Optional so profiles saved before this field existed still decode.
+    var traits: [String]?
     /// Total dictated words when this profile was generated; used to decide
     /// when enough new material justifies a refresh.
     var wordCountAtGeneration: Int
+
+    /// One line describing how this person actually writes, for use as
+    /// model context. The profile was previously generated and then only
+    /// displayed; this is what lets it feed the rewrites and answers that
+    /// are supposed to sound like the user.
+    var voiceContext: String {
+        var line = summary
+        if let traits, !traits.isEmpty {
+            line += " Characteristic traits: \(traits.joined(separator: ", "))."
+        }
+        return line
+    }
 }
 
 enum VoiceProfileStore {
@@ -53,15 +68,19 @@ enum VoiceProfileStore {
         short, fun two-word persona title that captures what they talk about \
         and how they speak (examples of the format: "Design Inspector", \
         "Pipeline Poet", "Deadline Whisperer"). Then write one short sentence \
-        (max 14 words) describing their dictation style. Answer in exactly \
-        this format, nothing else:
+        (max 14 words) describing their dictation style. Then list exactly \
+        three short style tags (one to three words each, e.g. "Detailed", \
+        "Frequent pauses", "Clarifies often"), comma-separated. Answer in \
+        exactly this format, nothing else:
         Title: <two word title>
         Style: <one sentence>
+        Traits: <tag>, <tag>, <tag>
         """
         do {
             let reply = try await engine.rewrite(clipped, instructions: instructions)
             var title = ""
             var summary = ""
+            var traits: [String] = []
             for line in reply.components(separatedBy: "\n") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.lowercased().hasPrefix("title:") {
@@ -71,11 +90,18 @@ enum VoiceProfileStore {
                 } else if trimmed.lowercased().hasPrefix("style:") {
                     summary = String(trimmed.dropFirst(6))
                         .trimmingCharacters(in: .whitespaces)
+                } else if trimmed.lowercased().hasPrefix("traits:") {
+                    traits = String(trimmed.dropFirst(7))
+                        .components(separatedBy: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”.")) }
+                        .filter { !$0.isEmpty }
                 }
             }
             guard !title.isEmpty, title.count <= 40 else { return nil }
             let profile = VoiceProfile(
                 title: title, summary: summary,
+                traits: traits.isEmpty ? nil : traits,
                 wordCountAtGeneration: totalWords)
             save(profile)
             return profile

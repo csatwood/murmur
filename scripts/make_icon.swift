@@ -1,59 +1,44 @@
-// Renders the Murmur app icon: soft teal rounded square with a white
-// waveform. Run: swift scripts/make_icon.swift <output-1024.png>
+// Rasterizes the Murmur app icon from its SVG source (Resources/Murmur.svg)
+// at exact pixel dimensions — scripts/make_icon.sh then downsamples this
+// into the rest of the .iconset sizes. Run directly only for a one-off
+// render; scripts/make_icon.sh is the normal entry point.
+// Usage: swift scripts/make_icon.swift <input.svg> <output.png>
 import AppKit
 
-let outputPath = CommandLine.arguments.count > 1
-    ? CommandLine.arguments[1] : "murmur-1024.png"
+let args = CommandLine.arguments
+guard args.count > 2 else {
+    fatalError("Usage: swift make_icon.swift <input.svg> <output.png>")
+}
+let inputPath = args[1]
+let outputPath = args[2]
+let pixelSize = 1024
 
-let canvas = CGFloat(1024)
-let image = NSImage(size: NSSize(width: canvas, height: canvas))
-image.lockFocus()
-
-// Standard macOS icon grid: 824×824 squircle centered on 1024 canvas.
-let inset = (canvas - 824) / 2
-let squircle = NSBezierPath(
-    roundedRect: NSRect(x: inset, y: inset, width: 824, height: 824),
-    xRadius: 186, yRadius: 186)
-
-let gradient = NSGradient(
-    starting: NSColor(red: 0.30, green: 0.68, blue: 0.64, alpha: 1),
-    ending: NSColor(red: 0.09, green: 0.36, blue: 0.34, alpha: 1))!
-gradient.draw(in: squircle, angle: -90)
-
-// Soft top glow that fades out — no hard edges.
-NSGraphicsContext.current?.saveGraphicsState()
-squircle.addClip()
-let glow = NSGradient(
-    starting: NSColor.white.withAlphaComponent(0.16),
-    ending: NSColor.white.withAlphaComponent(0))!
-glow.draw(
-    in: NSRect(x: inset, y: canvas / 2, width: 824, height: 412 + inset),
-    angle: -90)
-NSGraphicsContext.current?.restoreGraphicsState()
-
-// Waveform: five rounded bars, gently varied heights.
-let heights: [CGFloat] = [170, 320, 460, 320, 170]
-let barWidth = CGFloat(72)
-let spacing = CGFloat(38)
-let totalWidth = barWidth * 5 + spacing * 4
-var x = (canvas - totalWidth) / 2
-NSColor(white: 1, alpha: 0.96).setFill()
-for height in heights {
-    let bar = NSBezierPath(
-        roundedRect: NSRect(
-            x: x, y: (canvas - height) / 2, width: barWidth, height: height),
-        xRadius: barWidth / 2, yRadius: barWidth / 2)
-    bar.fill()
-    x += barWidth + spacing
+guard let svgImage = NSImage(contentsOfFile: inputPath) else {
+    fatalError("Could not load SVG at \(inputPath)")
 }
 
-image.unlockFocus()
+// An explicit pixel-sized NSBitmapImageRep, rather than NSImage.lockFocus(),
+// so the output is exactly 1024×1024 regardless of the host display's
+// backing scale factor.
+guard let rep = NSBitmapImageRep(
+    bitmapDataPlanes: nil,
+    pixelsWide: pixelSize, pixelsHigh: pixelSize,
+    bitsPerSample: 8, samplesPerPixel: 4,
+    hasAlpha: true, isPlanar: false,
+    colorSpaceName: .deviceRGB,
+    bytesPerRow: 0, bitsPerPixel: 0)
+else { fatalError("Could not create bitmap") }
+rep.size = NSSize(width: pixelSize, height: pixelSize)
 
-guard let tiff = image.tiffRepresentation,
-      let rep = NSBitmapImageRep(data: tiff),
-      let png = rep.representation(using: .png, properties: [:])
-else {
-    fatalError("Could not render icon")
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+svgImage.draw(
+    in: NSRect(x: 0, y: 0, width: pixelSize, height: pixelSize),
+    from: .zero, operation: .sourceOver, fraction: 1)
+NSGraphicsContext.restoreGraphicsState()
+
+guard let png = rep.representation(using: .png, properties: [:]) else {
+    fatalError("Could not encode PNG")
 }
 try! png.write(to: URL(fileURLWithPath: outputPath))
-print("Wrote \(outputPath)")
+print("Wrote \(outputPath) at \(pixelSize)x\(pixelSize)")

@@ -10,11 +10,36 @@ final class HotkeyMonitor {
     enum Hotkey: String, CaseIterable {
         case fn
         case rightOption
+        case rightCommand
+        case rightControl
+        case rightShift
 
+        // Right-side modifiers only, alongside fn — matching the reasoning
+        // already established by shipping Right Option instead of Left:
+        // left-side modifiers collide far more often with in-flight system
+        // and app shortcuts (⌘-anything, ⌥-anything) than their right-side
+        // twins do. Caps Lock is deliberately not offered here — it's a
+        // stateful toggle with its own OS-level debounce, not a clean
+        // press/release pair like every other case below.
         var displayName: String {
             switch self {
             case .fn: return "fn (Globe)"
             case .rightOption: return "Right Option (⌥)"
+            case .rightCommand: return "Right Command (⌘)"
+            case .rightControl: return "Right Control (⌃)"
+            case .rightShift: return "Right Shift (⇧)"
+            }
+        }
+
+        /// Short glyph for a keycap-sized chip — `displayName` is too long
+        /// once its parenthesized symbol has to stand alone at cap size.
+        var shortSymbol: String {
+            switch self {
+            case .fn: return "fn"
+            case .rightOption: return "⌥"
+            case .rightCommand: return "⌘"
+            case .rightControl: return "⌃"
+            case .rightShift: return "⇧"
             }
         }
 
@@ -22,6 +47,9 @@ final class HotkeyMonitor {
             switch self {
             case .fn: return 63
             case .rightOption: return 61
+            case .rightCommand: return 54
+            case .rightControl: return 62
+            case .rightShift: return 60
             }
         }
 
@@ -29,6 +57,9 @@ final class HotkeyMonitor {
             switch self {
             case .fn: return .function
             case .rightOption: return .option
+            case .rightCommand: return .command
+            case .rightControl: return .control
+            case .rightShift: return .shift
             }
         }
     }

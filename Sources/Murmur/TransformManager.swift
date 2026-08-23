@@ -80,7 +80,7 @@ final class TransformManager {
             return
         }
         isRunning = true
-        onStatus?("\(transform.name): reading selection…")
+        onStatus?("\(transform.name): reading selection")
 
         Task {
             defer {
@@ -98,9 +98,9 @@ final class TransformManager {
                 return
             }
 
-            onStatus?("\(transform.name): rewriting…")
+            onStatus?("\(transform.name): rewriting")
             do {
-                let rewritten = try await engine.rewrite(
+                let rewritten = try await engine.edit(
                     selection, instructions: transform.instructions)
                 guard !rewritten.isEmpty else {
                     throw NSError(domain: "Murmur", code: 2, userInfo: [
@@ -124,6 +124,6 @@ final class TransformManager {
 
     /// Runs a transform on arbitrary text (used by the Transforms page).
     func apply(_ transform: Transform, to text: String) async throws -> String {
-        try await engine.rewrite(text, instructions: transform.instructions)
+        try await engine.edit(text, instructions: transform.instructions)
     }
 }
