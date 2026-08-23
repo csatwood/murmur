@@ -6,7 +6,10 @@ Hold `fn`, speak, release — clean text appears at your cursor in any app.
 No cloud, no subscription, no word limits. Your audio and transcripts never
 leave your Mac.
 
-![Murmur dashboard](Resources/screenshot.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Resources/screenshot-dark.png">
+  <img src="Resources/screenshot.png" alt="Murmur dashboard">
+</picture>
 
 Murmur is an open-source, fully local take on the modern AI dictation app
 (in the spirit of Wispr Flow), built natively in Swift on Apple's on-device
@@ -118,7 +121,8 @@ HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whispe
                         TextInserter (clipboard + ⌘V)
 ```
 
-See [PLAN.md](PLAN.md) for the original design document.
+See [PLAN.md](PLAN.md) for the original design document and
+[CHANGELOG.md](CHANGELOG.md) for what's new in each release.
 
 ## License
 
