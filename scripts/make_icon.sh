@@ -1,18 +1,15 @@
 #!/bin/bash
-# Regenerates Resources/Murmur.icns from Resources/Murmur.svg — the single
-# command to run after the source SVG changes. scripts/make_app.sh picks up
-# the resulting .icns automatically on the next build.
+# Regenerates Resources/Murmur.icns from Resources/MurmurMascot.png — the
+# single command to run after the source artwork changes. scripts/make_app.sh
+# picks up the resulting .icns automatically on the next build.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SVG="Resources/Murmur.svg"
+MASTER="Resources/MurmurMascot.png"
 ICNS="Resources/Murmur.icns"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-
-MASTER="$WORK/master.png"
-swift scripts/make_icon.swift "$SVG" "$MASTER"
 
 ICONSET="$WORK/Murmur.iconset"
 mkdir -p "$ICONSET"
