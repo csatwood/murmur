@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.0.1 — 2026-08-25
+
+Fixes for the floating nav-bar HUD (the small pill that appears near the
+bottom of the screen while Murmur is idle).
+
+### Fixed
+
+- Its popovers (Templates/Transforms, More, Listen) could render with their
+  rounded corners and shadow sheared off flat, or clipped on one side —
+  the panel they draw into was a fixed size too small for their actual
+  content.
+- Moving the cursor from a popover's trigger icon into the popover itself
+  could close it before you reached it, since there was a real screen gap
+  between the two with no hover coverage.
+- At idle, the HUD's hit-region was the full nav-bar footprint (invisible,
+  but still solid) — enough to swallow clicks meant for another
+  bottom-docked utility sitting in the same part of the screen. Idle state
+  now shows a small reveal-pill with a much smaller footprint, which grows
+  into the full bar only when you hover it.
+- The reveal/collapse between the small pill and the full bar is now a
+  smooth, staged grow/shrink instead of an instant swap.
+
 ## v2.0.0 — 2026-08-23
 
 The first public update since the original release — a full redesign, built and
