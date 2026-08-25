@@ -23,4 +23,14 @@ ln -s /Applications "$STAGING/Applications"
 rm -f "$DMG"
 hdiutil create -volname Murmur -srcfolder "$STAGING" -ov -format UDZO "$DMG"
 
-echo "Built $DMG"
+# The versioned name is what ships as a GitHub release asset, so old
+# versions stay individually downloadable. This unversioned copy is what
+# murmurmac.com's DOWNLOAD_LINK actually points at, via GitHub's
+# releases/latest/download/ permalink — that URL only ever resolves a
+# fixed filename against whatever release is currently "latest", so it
+# needs a name that doesn't change release to release. Without this, every
+# release would need a matching manual update to the site's env var.
+UNVERSIONED="build/Murmur.dmg"
+cp -f "$DMG" "$UNVERSIONED"
+
+echo "Built $DMG and $UNVERSIONED"
