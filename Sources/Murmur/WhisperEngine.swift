@@ -135,6 +135,13 @@ final class WhisperEngine {
         // so the two numbers need to stay visibly in sync even if
         // WhisperKit's own default ever changes.
         options.noSpeechThreshold = Self.noSpeechThreshold
+        // WhisperKit's own default is `false` — without this, segment text
+        // comes back with literal `<|startoftranscript|>`/`<|en|>`/
+        // `<|endoftext|>`-style tokens embedded in it, which then went
+        // straight through to the user uncaught (TextFormatter doesn't
+        // strip them either). Found via a benchmark run: every Whisper
+        // transcription was otherwise correct, just wrapped in these.
+        options.skipSpecialTokens = true
         if let audioFile = try? AVAudioFile(forReading: url),
            audioFile.fileFormat.sampleRate > 0 {
             let seconds = Double(audioFile.length) / audioFile.fileFormat.sampleRate
