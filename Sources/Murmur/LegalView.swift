@@ -104,11 +104,18 @@ private struct OpenSourceComponent {
             fullText: mitLicense(copyright: "Copyright (c) 2024 argmax, inc.")),
         OpenSourceComponent(
             name: "whisper.cpp",
-            purpose: "Murmur's fastest recognition engine — runs Whisper models "
-                + "via Metal on the GPU.",
+            purpose: "Runs Whisper models via Metal on the GPU, as an alternative "
+                + "to the WhisperKit engine above.",
             license: "MIT",
             copyright: "Copyright (c) 2023-2026 The ggml authors",
             fullText: mitLicense(copyright: "Copyright (c) 2023-2026 The ggml authors")),
+        OpenSourceComponent(
+            name: "FluidAudio",
+            purpose: "Murmur's fastest recognition engine — runs NVIDIA's Parakeet "
+                + "TDT model via Core ML on the Neural Engine.",
+            license: "Apache-2.0",
+            copyright: "Copyright 2025 FluidInference",
+            fullText: apacheLicense),
         OpenSourceComponent(
             name: "Harper",
             purpose: "The fast, deterministic grammar and style checker that runs "

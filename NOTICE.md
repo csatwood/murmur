@@ -34,8 +34,9 @@ SOFTWARE.
 
 ## whisper.cpp / ggml
 
-Murmur's fastest recognition engine — runs Whisper models via Metal on the
-GPU. Vendored as a prebuilt binary framework at `Vendor/whisper.xcframework`.
+Runs Whisper models via Metal on the GPU, as an alternative to the
+WhisperKit engine above. Vendored as a prebuilt binary framework at
+`Vendor/whisper.xcframework`.
 
 License: MIT
 Copyright (c) 2023-2026 The ggml authors
@@ -57,6 +58,27 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## FluidAudio
+
+Murmur's fastest recognition engine — runs NVIDIA's Parakeet TDT model via
+Core ML on the Neural Engine. Pulled as a remote Swift Package dependency,
+not vendored.
+
+License: Apache-2.0
+Copyright 2025 FluidInference
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this file except in compliance with the License. You may obtain a copy of
+the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations under
+the License. Full license text: https://www.apache.org/licenses/LICENSE-2.0
 
 ## Harper
 

@@ -365,6 +365,9 @@ private struct NavBarHUDView: View {
                     NavPopoverRow(title: "whisper.cpp", selected: app.engine == "whispercpp") {
                         app.setEngine("whispercpp")
                     }
+                    NavPopoverRow(title: "Parakeet", selected: app.engine == "parakeet") {
+                        app.setEngine("parakeet")
+                    }
                 }
                 .offset(y: -44)
                 .onHover { inside in

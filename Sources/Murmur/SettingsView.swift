@@ -91,9 +91,10 @@ struct SettingsPage: View {
                     label: "Recognition engine",
                     detail: engineDetail,
                     isLast: app.engine != "whisper" && app.engine != "whispercpp"
+                        && app.engine != "parakeet"
                 ) {
                     FieldSelect(
-                        options: ["apple", "whisper", "whispercpp"],
+                        options: ["apple", "whisper", "whispercpp", "parakeet"],
                         label: engineLabel,
                         selection: Binding(
                             get: { app.engine },
@@ -131,6 +132,22 @@ struct SettingsPage: View {
                                 set: { app.setWhisperCppModel($0) }))
                     }
                 }
+                if app.engine == "parakeet" {
+                    FieldRow(
+                        label: "Parakeet model",
+                        detail: parakeetModelDetail,
+                        isLast: true
+                    ) {
+                        FieldSelect(
+                            options: ParakeetEngine.availableModels.map(\.id),
+                            label: { id in
+                                ParakeetEngine.availableModels.first { $0.id == id }?.label ?? id
+                            },
+                            selection: Binding(
+                                get: { app.parakeetModel },
+                                set: { app.setParakeetModel($0) }))
+                    }
+                }
             }
         }
         .onAppear(perform: loadLocales)
@@ -146,6 +163,7 @@ struct SettingsPage: View {
         // Engine. A speed/battery tradeoff worth letting you pick, not one
         // engine replacing the other.
         case "whispercpp": return "whisper.cpp — precise, Metal"
+        case "parakeet": return "Parakeet — precise, fast"
         default: return "Apple — instant"
         }
     }
@@ -158,6 +176,10 @@ struct SettingsPage: View {
         case "whispercpp":
             return "whisper.cpp: the same Whisper models, run on the GPU via Metal instead "
                 + "of the Neural Engine — faster, at some cost to battery life. Runs locally."
+        case "parakeet":
+            return "Parakeet: NVIDIA's model, run on the Neural Engine — notably fast, "
+                + "strong accuracy. Your dictionary isn't fed to it yet, unlike the "
+                + "Whisper engines above. Runs locally."
         default:
             return "Apple: instant, built into macOS. Runs locally."
         }
@@ -191,6 +213,16 @@ struct SettingsPage: View {
             return "Model loaded — whisper.cpp is transcribing your dictations."
         }
         if app.whisperCppEngine.isModelDownloaded(app.whisperCppModel) {
+            return "Model downloaded — loading. Apple engine covers dictations until it's ready."
+        }
+        return "Downloading in the background. Apple engine covers dictations until it's ready."
+    }
+
+    private var parakeetModelDetail: String {
+        if app.parakeetReady {
+            return "Model loaded — Parakeet is transcribing your dictations."
+        }
+        if app.parakeetEngine.isModelDownloaded(app.parakeetModel) {
             return "Model downloaded — loading. Apple engine covers dictations until it's ready."
         }
         return "Downloading in the background. Apple engine covers dictations until it's ready."

@@ -19,15 +19,18 @@ speech and language models, with an optional local Whisper engine.
 
 - **Push-to-talk dictation** — hold `fn` (or right ⌥) anywhere; release to
   paste at your cursor. Double-tap for hands-free mode.
-- **Three recognition engines**, all offline:
+- **Four recognition engines**, all offline:
   - **Apple** — instant, built into macOS (SpeechAnalyzer, macOS 26).
   - **WhisperKit** — precision engine via
     [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML on the
     Neural Engine). Your vocabulary is fed into the decoder prompt.
-  - **whisper.cpp** — Murmur's fastest engine, running Whisper models via
-    Metal on the GPU, with phrase-based filtering for the sign-off
+  - **whisper.cpp** — the same Whisper models, running via Metal on the
+    GPU instead, with phrase-based filtering for the sign-off
     hallucinations ("Thank you.", etc.) Whisper-family models are known to
     produce on near-silent audio.
+  - **Parakeet** — NVIDIA's model via
+    [FluidAudio](https://github.com/FluidInference/FluidAudio) (CoreML on
+    the Neural Engine). Murmur's fastest engine; no vocabulary biasing yet.
 - **Harper grammar pass** — [Harper](https://github.com/Automattic/harper)
   runs alongside the Apple Intelligence edit pass below: deterministic,
   millisecond-speed local linting (agreement, punctuation, repeated words)
@@ -99,22 +102,23 @@ re-grant Accessibility after each rebuild.
 
 ## Privacy
 
-Everything runs on this Mac: recognition (Apple SpeechAnalyzer or local
-Whisper), cleanup, tone rewriting (Apple Intelligence), and the Voice
-Profile analysis. Murmur makes no network requests except the one-time
-model downloads by macOS itself (Apple speech assets) and, if you opt into
-the Whisper engine, the model fetch from Hugging Face. Dictation data is
-stored only in `~/Library/Application Support/Murmur/`.
+Everything runs on this Mac: recognition (Apple SpeechAnalyzer or a local
+Whisper/Parakeet model), cleanup, tone rewriting (Apple Intelligence), and
+the Voice Profile analysis. Murmur makes no network requests except the
+one-time model downloads by macOS itself (Apple speech assets) and, if you
+opt into a non-Apple engine, that model's own one-time fetch (Hugging Face
+for Whisper, FluidAudio's own CDN for Parakeet). Dictation data is stored
+only in `~/Library/Application Support/Murmur/`.
 
 ## Architecture
 
-Swift Package. WhisperKit is a remote SwiftPM dependency, used only if you
-pick that engine; whisper.cpp/ggml and Harper are vendored as prebuilt
-xcframeworks under `Vendor/` (Harper's Rust source is included, whisper.cpp's
-isn't — see [NOTICE.md](NOTICE.md) for both).
+Swift Package. WhisperKit and FluidAudio are remote SwiftPM dependencies,
+each used only if you pick that engine; whisper.cpp/ggml and Harper are
+vendored as prebuilt xcframeworks under `Vendor/` (Harper's Rust source is
+included, whisper.cpp's isn't — see [NOTICE.md](NOTICE.md) for both).
 
 ```
-HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whisper.cpp)
+HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whisper.cpp / Parakeet)
                                         ↓
      TextFormatter → LearnedStore → SnippetStore → RewriteEngine (Styles) → HarperChecker
                                         ↓
@@ -126,4 +130,4 @@ See [PLAN.md](PLAN.md) for the original design document and
 
 ## License
 
-[MIT](LICENSE). Not affiliated with Wispr Flow, OpenAI, or Apple.
+[MIT](LICENSE). Not affiliated with Wispr Flow, OpenAI, NVIDIA, or Apple.

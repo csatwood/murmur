@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Fourth recognition engine**: Parakeet, NVIDIA's TDT model running via
+  [FluidAudio](https://github.com/FluidInference/FluidAudio) (Core ML on
+  the Neural Engine) — Murmur's fastest engine yet, in two sizes (English
+  v2, multilingual v3). Vocabulary biasing isn't available for it yet,
+  unlike the two Whisper engines.
+
 ## v2.0.1 — 2026-08-25
 
 Fixes for the floating nav-bar HUD (the small pill that appears near the

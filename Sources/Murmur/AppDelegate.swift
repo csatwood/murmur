@@ -47,11 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let rewriteEngine = RewriteEngine()
     let whisperEngine = WhisperEngine()
     let whisperCppEngine = WhisperCppEngine()
+    let parakeetEngine = ParakeetEngine()
     @Published var engine: String = Settings.engine
     @Published var whisperModel: String = Settings.whisperModel
     @Published var whisperReady = false
     @Published var whisperCppModel: String = Settings.whisperCppModel
     @Published var whisperCppReady = false
+    @Published var parakeetModel: String = Settings.parakeetModel
+    @Published var parakeetReady = false
     @Published var voiceProfile: VoiceProfile? = VoiceProfileStore.load()
     @Published var appearance: AppearanceSetting = Settings.appearance
     private(set) lazy var transformManager = TransformManager(engine: rewriteEngine)
@@ -148,10 +151,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     model: Settings.whisperCppModel)
             }
         }
+        parakeetEngine.onStatus = { [weak self] status in
+            Task { @MainActor in
+                guard let self else { return }
+                self.transformStatus = status
+                self.parakeetReady = self.parakeetEngine.isReady(
+                    model: Settings.parakeetModel)
+            }
+        }
         if Settings.engine == "whisper" {
             whisperEngine.preload(model: Settings.whisperModel)
         } else if Settings.engine == "whispercpp" {
             whisperCppEngine.preload(model: Settings.whisperCppModel)
+        } else if Settings.engine == "parakeet" {
+            parakeetEngine.preload(model: Settings.parakeetModel)
         }
         if Settings.hasCompletedOnboarding {
             showMainWindow()
@@ -331,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         micAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         whisperReady = whisperEngine.isReady(model: Settings.whisperModel)
         whisperCppReady = whisperCppEngine.isReady(model: Settings.whisperCppModel)
+        parakeetReady = parakeetEngine.isReady(model: Settings.parakeetModel)
     }
 
     // MARK: - Settings changes (from window or menu)
@@ -358,6 +372,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             whisperEngine.preload(model: Settings.whisperModel)
         } else if newEngine == "whispercpp" {
             whisperCppEngine.preload(model: Settings.whisperCppModel)
+        } else if newEngine == "parakeet" {
+            parakeetEngine.preload(model: Settings.parakeetModel)
         }
     }
 
@@ -374,6 +390,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         whisperCppModel = model
         if Settings.engine == "whispercpp" {
             whisperCppEngine.preload(model: model)
+        }
+    }
+
+    func setParakeetModel(_ model: String) {
+        Settings.parakeetModel = model
+        parakeetModel = model
+        if Settings.engine == "parakeet" {
+            parakeetEngine.preload(model: model)
         }
     }
 
@@ -479,6 +503,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 whisperCppEngine.preload(model: Settings.whisperCppModel)
                 lastError = "whisper.cpp model is still preparing — used Apple " +
                     "engine for this dictation. whisper.cpp takes over when ready."
+            }
+        } else if Settings.engine == "parakeet" {
+            if parakeetEngine.isReady(model: Settings.parakeetModel) {
+                do {
+                    return try await parakeetEngine.transcribe(
+                        fileAt: url, model: Settings.parakeetModel,
+                        localeID: Settings.localeIdentifier, biasTerms: biasTerms)
+                } catch {
+                    lastError = "Parakeet engine failed " +
+                        "(\(error.localizedDescription)) — used Apple engine instead."
+                }
+            } else {
+                parakeetEngine.preload(model: Settings.parakeetModel)
+                lastError = "Parakeet model is still preparing — used Apple " +
+                    "engine for this dictation. Parakeet takes over when ready."
             }
         }
         return try await transcriber.transcribe(fileAt: url, biasTerms: biasTerms)
@@ -965,7 +1004,8 @@ enum Settings {
         set { defaults.set(newValue, forKey: "locale") }
     }
 
-    /// Recognition engine: "apple" (instant) or "whisper" (precise).
+    /// Recognition engine: "apple" (instant), "whisper" or "whispercpp"
+    /// (precise, Whisper-family), or "parakeet" (precise, fast).
     static var engine: String {
         get { defaults.string(forKey: "engine") ?? "apple" }
         set { defaults.set(newValue, forKey: "engine") }
@@ -984,6 +1024,11 @@ enum Settings {
     static var whisperCppModel: String {
         get { defaults.string(forKey: "whisperCppModel") ?? "small" }
         set { defaults.set(newValue, forKey: "whisperCppModel") }
+    }
+
+    static var parakeetModel: String {
+        get { defaults.string(forKey: "parakeetModel") ?? "v3" }
+        set { defaults.set(newValue, forKey: "parakeetModel") }
     }
 
     /// Say a template's trigger phrase ("meeting notes", "email draft", …)

@@ -195,6 +195,18 @@ struct MurmurMain {
                         model: whisperModel,
                         localeID: localeIdentifier,
                         biasTerms: LearnedStore.biasTerms())
+                } else if engineName == "parakeet" {
+                    let parakeet = ParakeetEngine()
+                    parakeet.onStatus = { status in
+                        if let status {
+                            FileHandle.standardError.write(Data("\(status)\n".utf8))
+                        }
+                    }
+                    raw = try await parakeet.transcribe(
+                        fileAt: URL(fileURLWithPath: path),
+                        model: whisperModel,
+                        localeID: localeIdentifier,
+                        biasTerms: LearnedStore.biasTerms())
                 } else {
                     let transcriber = Transcriber(
                         locale: Locale(identifier: localeIdentifier))
@@ -257,7 +269,7 @@ struct MurmurMain {
         Usage:
           Murmur                      run as menu bar app
           Murmur --transcribe <file>  transcribe an audio file
-                                      [--locale en-US] [--engine apple|whisper]
+                                      [--locale en-US] [--engine apple|whisper|whispercpp|parakeet]
                                       [--whisper-model base|small|large-v3-v20240930_turbo]
           Murmur --format "<text>"    run the text formatter on a string
           Murmur --edit "<text>"      run the real default rewrite pass on a

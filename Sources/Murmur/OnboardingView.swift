@@ -219,6 +219,10 @@ struct OnboardingRoot: View {
                     title: "whisper.cpp — precise, Metal",
                     detail: "The same Whisper models, run on the GPU via Metal instead of the Neural Engine — faster, at some cost to battery life. Runs locally.",
                     selected: app.engine == "whispercpp") { app.setEngine("whispercpp") }
+                EngineOptionRow(
+                    title: "Parakeet — precise, fast",
+                    detail: "NVIDIA's model, run on the Neural Engine — notably fast, strong accuracy. Your dictionary isn't fed to it yet, unlike the Whisper engines above. Runs locally.",
+                    selected: app.engine == "parakeet") { app.setEngine("parakeet") }
             }
             if app.engine == "apple" {
                 Text("Nothing to download — Apple's engine is already on your Mac.")
@@ -249,26 +253,35 @@ struct OnboardingRoot: View {
     }
 
     private var currentModels: [(id: String, label: String)] {
-        app.engine == "whispercpp" ? WhisperCppEngine.availableModels : WhisperEngine.availableModels
+        switch app.engine {
+        case "whispercpp": return WhisperCppEngine.availableModels
+        case "parakeet": return ParakeetEngine.availableModels
+        default: return WhisperEngine.availableModels
+        }
     }
 
     private var currentModelID: String {
-        app.engine == "whispercpp" ? app.whisperCppModel : app.whisperModel
+        switch app.engine {
+        case "whispercpp": return app.whisperCppModel
+        case "parakeet": return app.parakeetModel
+        default: return app.whisperModel
+        }
     }
 
     private func setCurrentModel(_ id: String) {
-        if app.engine == "whispercpp" {
-            app.setWhisperCppModel(id)
-        } else {
-            app.setWhisperModel(id)
+        switch app.engine {
+        case "whispercpp": app.setWhisperCppModel(id)
+        case "parakeet": app.setParakeetModel(id)
+        default: app.setWhisperModel(id)
         }
     }
 
     /// Matches `SettingsPage`'s `whisperModelDetail` / `whisperCppModelDetail`
-    /// wording exactly — the same fact shown in two places should read the
-    /// same in both.
+    /// / `parakeetModelDetail` wording exactly — the same fact shown in two
+    /// places should read the same in both.
     private var engineStatusNote: String {
-        if app.engine == "whispercpp" {
+        switch app.engine {
+        case "whispercpp":
             if app.whisperCppReady {
                 return "Model loaded — whisper.cpp is transcribing your dictations."
             }
@@ -276,14 +289,23 @@ struct OnboardingRoot: View {
                 return "Model downloaded — loading. Apple engine covers dictations until it's ready."
             }
             return "Downloading in the background. Apple engine covers dictations until it's ready."
+        case "parakeet":
+            if app.parakeetReady {
+                return "Model loaded — Parakeet is transcribing your dictations."
+            }
+            if app.parakeetEngine.isModelDownloaded(app.parakeetModel) {
+                return "Model downloaded — loading. Apple engine covers dictations until it's ready."
+            }
+            return "Downloading in the background. Apple engine covers dictations until it's ready."
+        default:
+            if app.whisperReady {
+                return "Model loaded — Whisper is transcribing your dictations."
+            }
+            if app.whisperEngine.isModelDownloaded(app.whisperModel) {
+                return "Model downloaded — loading. Apple engine covers dictations until it's ready."
+            }
+            return "Downloading in the background. Apple engine covers dictations until it's ready."
         }
-        if app.whisperReady {
-            return "Model loaded — Whisper is transcribing your dictations."
-        }
-        if app.whisperEngine.isModelDownloaded(app.whisperModel) {
-            return "Model downloaded — loading. Apple engine covers dictations until it's ready."
-        }
-        return "Downloading in the background. Apple engine covers dictations until it's ready."
     }
 
     // MARK: - Hotkey
