@@ -113,6 +113,19 @@ final class HotkeyMonitor {
         }
     }
 
+    /// For a hands-free session ended by something other than a key press
+    /// (auto-stop on a detected pause) — resets the same state `keyDown()`'s
+    /// hands-free-stop branch does, minus `onStop?()` itself, which the
+    /// caller has already triggered directly. Without this, this monitor's
+    /// own `isHandsFree` would stay stuck true, and the next press would be
+    /// swallowed as "stop the (already-stopped) session" instead of
+    /// starting a new one.
+    func resetHandsFree() {
+        isHandsFree = false
+        pressStartedAt = nil
+        lastTapEndedAt = nil
+    }
+
     private func keyDown() {
         if isHandsFree {
             // Any press while hands-free stops the session.

@@ -7,6 +7,7 @@ import SwiftUI
 struct SettingsPage: View {
     @ObservedObject var app: AppDelegate
     @State private var supportedLocaleIDs: [String] = []
+    @State private var handsFreeAutoStop = Settings.handsFreeAutoStop
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -78,6 +79,17 @@ struct SettingsPage: View {
                         selection: Binding(
                             get: { app.hotkey },
                             set: { app.setHotkey($0) }))
+                }
+                FieldRow(
+                    label: "Hands-free auto-stop",
+                    detail: "Double-tap to start, then stop automatically on a real pause "
+                        + "instead of tapping again. Manual stop always still works.",
+                    isLast: false
+                ) {
+                    MurmurToggle(isOn: $handsFreeAutoStop)
+                        .onChange(of: handsFreeAutoStop) { _, newValue in
+                            Settings.handsFreeAutoStop = newValue
+                        }
                 }
                 FieldRow(label: "Language") {
                     FieldSelect(

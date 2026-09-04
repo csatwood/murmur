@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let whisperCppEngine = WhisperCppEngine()
     let parakeetEngine = ParakeetEngine()
     let vadEngine = VadEngine()
+    private lazy var turnDetector = TurnDetector(vadEngine: vadEngine)
     @Published var engine: String = Settings.engine
     @Published var whisperModel: String = Settings.whisperModel
     @Published var whisperReady = false
@@ -545,10 +546,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         hotkeyMonitor.onHandsFreeChange = { [weak self] active in
             DispatchQueue.main.async {
-                self?.isHandsFree = active
-                self?.updateIcon()
-                if active { NSSound(named: "Pop")?.play() }
+                guard let self else { return }
+                self.isHandsFree = active
+                self.updateIcon()
+                if active {
+                    NSSound(named: "Pop")?.play()
+                    if Settings.handsFreeAutoStop {
+                        self.turnDetector.start()
+                        self.recorder.onLiveBuffer = { [weak self] buffer in
+                            Task { @MainActor in await self?.turnDetector.ingest(buffer) }
+                        }
+                    }
+                } else {
+                    self.recorder.onLiveBuffer = nil
+                    self.turnDetector.stop()
+                }
             }
+        }
+        turnDetector.onTurnEnd = { [weak self] in
+            guard let self else { return }
+            self.recorder.onLiveBuffer = nil
+            self.hotkeyMonitor.resetHandsFree()
+            self.stopAndTranscribe()
         }
     }
 
@@ -1042,6 +1061,16 @@ enum Settings {
     static var parakeetModel: String {
         get { defaults.string(forKey: "parakeetModel") ?? "v3" }
         set { defaults.set(newValue, forKey: "parakeetModel") }
+    }
+
+    /// Auto-stop a hands-free recording on a detected pause, instead of
+    /// requiring a second hotkey press. Defaults on; the underlying
+    /// streaming VAD is FluidAudio's own "beta" feature, so this stays a
+    /// real, visible toggle rather than invisible infrastructure — manual
+    /// double-tap-to-stop keeps working regardless of this setting.
+    static var handsFreeAutoStop: Bool {
+        get { defaults.object(forKey: "handsFreeAutoStop") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "handsFreeAutoStop") }
     }
 
     /// Say a template's trigger phrase ("meeting notes", "email draft", …)

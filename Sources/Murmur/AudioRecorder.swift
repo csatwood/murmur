@@ -57,6 +57,15 @@ final class AudioRecorder {
     /// one-syllable word comfortably does.
     private let minimumSignalDuration: Double = 0.15
 
+    /// Optional live feed of every captured buffer, for callers that need to
+    /// watch an in-progress recording (hands-free auto-stop) rather than
+    /// just the completed file. `nil` by default — push-to-talk and
+    /// hands-free sessions with no listener pay nothing extra. Called
+    /// synchronously from the real-time tap callback below, so whatever's
+    /// attached here must return immediately, same as the rest of that
+    /// callback — no async work, no blocking.
+    var onLiveBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     static func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -130,6 +139,7 @@ final class AudioRecorder {
             if Self.hasSignal(in: buffer, above: self.silenceRMSThreshold) {
                 self.signalFrameCount += AVAudioFramePosition(buffer.frameLength)
             }
+            self.onLiveBuffer?(buffer)
         }
 
         do {

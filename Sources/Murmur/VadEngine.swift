@@ -37,6 +37,13 @@ final class VadEngine {
         return loaded
     }
 
+    /// The loaded model, for callers doing more than a one-shot file check
+    /// (`TurnDetector`'s live streaming session). `nil` while still loading
+    /// or on failure — same fail-open contract as `hasNoDetectedSpeech`.
+    func loadedManager() async -> VadManager? {
+        try? await pipeline()
+    }
+
     /// True only when VAD confidently found zero speech anywhere in the
     /// recording. Fails open on any problem — model still loading, a
     /// processing error — by returning `false`, the same philosophy as
