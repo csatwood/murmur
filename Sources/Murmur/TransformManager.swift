@@ -29,9 +29,15 @@ struct Transform: Identifiable {
             description: "Turns a rough idea into a clear, well-structured " +
                          "prompt for an AI assistant.",
             instructions: "Rewrite the user's rough notes as a clear, " +
-                "well-structured prompt for an AI assistant: state the goal, " +
-                "the relevant context, explicit instructions, and any " +
-                "constraints or output format requirements."),
+                "well-structured prompt for an AI assistant: organize the " +
+                "content into labeled sections — Goal, Context, " +
+                "Instructions, and Constraints/Format — inferring structure " +
+                "the notes imply but don't state outright. Unlike a light " +
+                "copyedit, restructuring and expanding short notes into " +
+                "full labeled sections is the job here, not elaboration: a " +
+                "short input producing a longer, organized output is " +
+                "correct, as long as every stated fact and intent traces " +
+                "back to what was actually said."),
     ]
 }
 

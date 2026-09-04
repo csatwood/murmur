@@ -12,6 +12,7 @@ struct MurmurMain {
         var engineName = "apple"
         var whisperModel = Settings.whisperModel
         var templateName: String?
+        var transformID: String?
 
         while let argument = arguments.next() {
             switch argument {
@@ -47,6 +48,8 @@ struct MurmurMain {
                 mode = .historyExport(path)
             case "--template":
                 templateName = arguments.next() ?? templateName
+            case "--transform-id":
+                transformID = arguments.next() ?? transformID
             case "--selftest":
                 mode = .selftest
             case "--locale":
@@ -87,9 +90,12 @@ struct MurmurMain {
                 FileHandle.standardError.write(Data("Unavailable: \(note)\n".utf8))
                 exit(1)
             }
+            let transform = transformID.flatMap { id in
+                Transform.all.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }
+            } ?? Transform.all[0]
             do {
                 let polished = try await engine.edit(
-                    text, instructions: Transform.all[0].instructions)
+                    text, instructions: transform.instructions)
                 print(polished)
                 exit(0)
             } catch {
@@ -272,6 +278,9 @@ struct MurmurMain {
                                       [--locale en-US] [--engine apple|whisper|whispercpp|parakeet]
                                       [--whisper-model base|small|large-v3-v20240930_turbo]
           Murmur --format "<text>"    run the text formatter on a string
+          Murmur --transform "<text>" run a ⌥1/⌥2 Transform (Polish by default)
+                                      [--transform-id promptEngineer] to pick
+                                      a different one from Transform.all
           Murmur --edit "<text>"      run the real default rewrite pass on a
                                       string — actual persisted Voice Profile
                                       and default style included, same as a
