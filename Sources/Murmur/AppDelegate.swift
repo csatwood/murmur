@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let whisperEngine = WhisperEngine()
     let whisperCppEngine = WhisperCppEngine()
     let parakeetEngine = ParakeetEngine()
+    let vadEngine = VadEngine()
     @Published var engine: String = Settings.engine
     @Published var whisperModel: String = Settings.whisperModel
     @Published var whisperReady = false
@@ -166,6 +167,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         } else if Settings.engine == "parakeet" {
             parakeetEngine.preload(model: Settings.parakeetModel)
         }
+        // Unconditional, unlike the engine preloads above — VAD refines the
+        // silence gate for every recognition engine, not just one choice.
+        vadEngine.preload()
         if Settings.hasCompletedOnboarding {
             showMainWindow()
             Task {
@@ -661,6 +665,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
 
         Task { [history, rewriteEngine] in
             defer { try? FileManager.default.removeItem(at: url) }
+            // A second, sharper opinion on top of the RMS-based `hasSignal`
+            // gate just above — catches what raw amplitude can't, like a
+            // loud non-speech sound clearing the floor. Independent of
+            // whichever recognition engine is selected below.
+            if await vadEngine.hasNoDetectedSpeech(fileAt: url) {
+                dictationLog.info("recognize: VAD found no speech, skipping recognition")
+                uiState = .idle
+                return
+            }
             do {
                 dictationLog.info("recognize: start")
                 let raw = try await recognize(fileAt: url)
