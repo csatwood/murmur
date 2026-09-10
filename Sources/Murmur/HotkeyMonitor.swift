@@ -73,7 +73,8 @@ final class HotkeyMonitor {
     var onHandsFreeChange: ((Bool) -> Void)?
 
     private(set) var isHandsFree = false
-    private var monitor: Any?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
     private var keyIsDown = false
     private var pressStartedAt: Date?
     private var lastTapEndedAt: Date?
@@ -88,17 +89,31 @@ final class HotkeyMonitor {
 
     func startMonitoring() {
         stopMonitoring()
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+        // A global monitor only receives events posted to *other*
+        // applications — it stays silent for the hotkey when Murmur's own
+        // window (e.g. Scratchpad, Transforms' try-it box) is what has
+        // focus. A local monitor covers exactly that gap; both are needed
+        // to catch the key regardless of which app is frontmost.
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
             [weak self] event in
             self?.handle(event)
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            self?.handle(event)
+            return event
         }
     }
 
     func stopMonitoring() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
         }
-        monitor = nil
+        globalMonitor = nil
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+        }
+        localMonitor = nil
     }
 
     private func handle(_ event: NSEvent) {

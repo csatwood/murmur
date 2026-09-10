@@ -137,10 +137,13 @@ private enum NavPopoverKind {
 /// Fixed dark, white-based colors throughout — matches `StatusHUDView`'s own
 /// reasoning: this floats over arbitrary desktop content, not app UI, so it
 /// stays legible the same way regardless of Murmur's own light/dark setting.
+/// `pillFill`/`popoverFill` are two distinct darks straight from
+/// Main.dc.html's HUD artboard, not a shared near-black — solid, not
+/// translucent, so legibility never depends on what's behind them.
 private enum HUDStyle {
-    static let pillFill = Color(nsColor: NSColor(white: 0.08, alpha: 0.92))
+    static let pillFill = Palette.navActivePill
     static let pillBorder = Color.white.opacity(0.14)
-    static let popoverFill = Color(nsColor: NSColor(white: 0.10, alpha: 0.97))
+    static let popoverFill = Palette.warmInk
     static let iconIdle = Color.white.opacity(0.55)
     static let iconHoverBG = Color.white.opacity(0.10)
 }
@@ -201,6 +204,10 @@ private struct NavBarHUDView: View {
                     .fill(HUDStyle.pillFill)
                     .overlay(Capsule().stroke(HUDStyle.pillBorder, lineWidth: 1))
                     .frame(width: shapeSize.width, height: shapeSize.height)
+                    // Main.dc.html's HUD artboard shows a shadow here —
+                    // tried, and reverted by request, same as StatusHUDView's
+                    // pill: it read as a box under the pill, not the pill
+                    // floating.
                 pillIcons
                     .opacity(iconsVisible ? 1 : 0)
                     .allowsHitTesting(pillHovered)
@@ -252,12 +259,24 @@ private struct NavBarHUDView: View {
         }
         .task {
             let locales = await SpeechTranscriber.supportedLocales
-            supportedLocaleIDs = locales
-                .map { $0.identifier(.bcp47) }
-                .sorted {
-                    (Locale.current.localizedString(forIdentifier: $0) ?? $0)
-                    < (Locale.current.localizedString(forIdentifier: $1) ?? $1)
-                }
+            supportedLocaleIDs = sortedByLocalizedName(locales.map { $0.identifier(.bcp47) })
+        }
+    }
+
+    /// Mirrors `SettingsPage.pickerLocaleIDs`: the languages on offer
+    /// depend on the active recognition engine (and, for Whisper/Parakeet,
+    /// its selected model), not just Apple's fixed on-device asset list —
+    /// see `AppDelegate.supportedLanguageIDs()`.
+    private var languageOptions: [String] {
+        var ids = sortedByLocalizedName(app.supportedLanguageIDs() ?? supportedLocaleIDs)
+        if !ids.contains(app.localeID) { ids.insert(app.localeID, at: 0) }
+        return ids
+    }
+
+    private func sortedByLocalizedName(_ ids: [String]) -> [String] {
+        ids.sorted {
+            (Locale.current.localizedString(forIdentifier: $0) ?? $0)
+            < (Locale.current.localizedString(forIdentifier: $1) ?? $1)
         }
     }
 
@@ -345,7 +364,7 @@ private struct NavBarHUDView: View {
                     NavPopoverHeader("Language")
                     ScrollView {
                         VStack(spacing: 0) {
-                            ForEach(supportedLocaleIDs, id: \.self) { id in
+                            ForEach(languageOptions, id: \.self) { id in
                                 NavPopoverRow(
                                     title: Locale.current.localizedString(forIdentifier: id) ?? id,
                                     selected: id == app.localeID
@@ -524,7 +543,8 @@ private struct NavPopover<Content: View>: View {
             .padding(6)
             .frame(width: 190)
             .background(RoundedRectangle(cornerRadius: 12).fill(HUDStyle.popoverFill))
-            .shadow(color: .black.opacity(0.32), radius: 20, y: 10)
+            // `0 20px 40px rgba(20,20,19,.32)` in Main.dc.html.
+            .shadow(color: .black.opacity(0.32), radius: 20, y: 20)
             .transition(.opacity.combined(with: .scale(0.96, anchor: .bottom)))
     }
 }
@@ -580,7 +600,7 @@ private struct NavPopoverRow: View {
                 if selected {
                     MurmurIconView(icon: .check)
                         .frame(width: 11, height: 11)
-                        .foregroundStyle(Palette.accent)
+                        .foregroundStyle(Palette.sunset)
                 }
             }
             .foregroundStyle(muted ? .white.opacity(0.5) : .white.opacity(0.85))

@@ -3,9 +3,15 @@ import SwiftUI
 
 // MARK: - Templates
 //
-// Card grid per the design, each card showing what the template actually
-// produces plus its spoken trigger, with the voice toggle, per-app
-// auto-activation rules, and the transcript workspace all on one page.
+// Redesigned per the "Main" canvas (Templates.dc.html): same
+// `GlassPanelPage` shell as the other redesigned pages, warm palette
+// instead of the shared dynamic `Palette`. Functionally unchanged — a card
+// grid, each card showing what the template actually produces plus its
+// spoken trigger, with the voice toggle and the transcript workspace all
+// on one page. `templateEditor`'s `.sheet` is deliberately left on the old
+// dynamic palette and attached outside `GlassPanelPage`'s content, same
+// call as HomeView's own sheet — see `GlassPanelPage`'s own doc comment on
+// why presented content shouldn't be forced light.
 
 struct TemplatesPage: View {
     @ObservedObject var app: AppDelegate
@@ -38,145 +44,112 @@ struct TemplatesPage: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "Templates",
-                subtitle: "Restructure a transcript — say the trigger, get the shape, no clicking.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
 
-            PageTip(text: "Say the trigger phrase first, then keep talking — Murmur strips it "
-                    + "off and reshapes everything that follows.")
-                .padding(.bottom, 12)
+                    tipBanner("Say the trigger phrase first, then keep talking — Murmur strips "
+                              + "it off and reshapes everything that follows.")
+                        .padding(.top, 18)
 
-            Card(flat: true) {
-                FieldRow(
-                    label: "Apply by voice",
-                    detail: "Say a template's trigger phrase to reshape a dictation automatically",
-                    isLast: true
-                ) {
-                    MurmurToggle(isOn: $voiceTemplatesEnabled)
-                        .onChange(of: voiceTemplatesEnabled) { _, newValue in
-                            Settings.voiceTemplatesEnabled = newValue
+                    applyByVoiceRow
+                        .padding(.top, 14)
+
+                    if let note = app.rewriteEngine.availabilityNote {
+                        tipBanner(note).padding(.top, 12)
+                    }
+
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(templates) { template in
+                            templateCard(template)
                         }
+                        newTemplateCard
+                    }
+                    .padding(.top, 14)
+
+                    Text("Transcript")
+                        .font(.manrope(14, .semibold))
+                        .foregroundStyle(Palette.warmInk)
+                        .padding(.top, 14)
+                    transcriptCard
+                        .padding(.top, 8)
+
+                    if !result.isEmpty {
+                        Text("Result")
+                            .font(.manrope(14, .semibold))
+                            .foregroundStyle(Palette.warmInk)
+                            .padding(.top, 14)
+                        resultCard
+                            .padding(.top, 8)
+                    }
+
+                    relatedLink
+                        .padding(.top, 14)
                 }
             }
-            .padding(.bottom, 16)
-
-            if let note = app.rewriteEngine.availabilityNote {
-                PageTip(text: note).padding(.bottom, 12)
-            }
-
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(templates) { template in
-                    templateCard(template)
-                }
-                Button {
-                    editorName = ""
-                    editorInstructions = ""
-                    editorTrigger = ""
-                    showingEditor = true
-                } label: {
-                    HStack(spacing: 7) {
-                        MurmurIconView(icon: .plus).frame(width: 14, height: 14)
-                        Text("New template").font(.manrope(12, .semibold))
-                    }
-                    .foregroundStyle(Palette.inkSoft)
-                    .frame(maxWidth: .infinity, minHeight: 78)
-                    .background(
-                        RoundedRectangle(cornerRadius: Radius.md)
-                            .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                            .foregroundStyle(Palette.border))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressScaleButtonStyle(scale: 0.98))
-            }
-
-            // Workspace
-            SectionHead(title: "Transcript")
-            Card {
-                TextEditor(text: $inputText)
-                    .font(.manrope(13))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 110)
-                    .overlay(alignment: .topLeading) {
-                        if inputText.isEmpty {
-                            Text("Paste or dictate a transcript, or send one in from History…")
-                                .font(.manrope(13))
-                                .italic()
-                                .foregroundStyle(Palette.inkFaint)
-                                .padding(.top, 8)
-                                .padding(.leading, 5)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                HStack(spacing: 10) {
-                    Button {
-                        generate()
-                    } label: {
-                        HStack(spacing: 7) {
-                            if running {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                MurmurIconView(icon: .trans).frame(width: 13, height: 13)
-                            }
-                            Text(running ? "Generating…" : "Generate")
-                                .font(.manrope(12.5, .semibold))
-                        }
-                        .foregroundStyle(canGenerate ? Palette.accentInk : Palette.inkFaint)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: Radius.sm)
-                                .fill(canGenerate ? Palette.accent : Palette.cardHover))
-                    }
-                    .buttonStyle(PressScaleButtonStyle())
-                    .disabled(!canGenerate)
-
-                    if selectedTemplateID == nil {
-                        Text("Pick a shape above first")
-                            .font(.manrope(11.5))
-                            .foregroundStyle(Palette.inkFaint)
-                    }
-                    Spacer()
-                    if !inputText.isEmpty {
-                        Button("Clear") { inputText = ""; result = "" }
-                            .buttonStyle(GhostButtonStyle())
-                    }
-                }
-                .padding(.top, 12)
-            }
-
-            if !result.isEmpty {
-                SectionHead(title: "Result")
-                Card {
-                    HStack {
-                        Spacer()
-                        IconButton(icon: .copy, help: "Copy") {
-                            let pb = NSPasteboard.general
-                            pb.clearContents()
-                            pb.setString(result, forType: .string)
-                        }
-                        IconButton(icon: .arrowRight, help: "Paste at cursor in the app behind Murmur") {
-                            TextInserter.insert(result)
-                        }
-                    }
-                    Text(result)
-                        .font(.manrope(13))
-                        .foregroundStyle(Palette.ink)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
-            RelatedLink(
-                prefix: "Want a template applied automatically in one app?",
-                linkTitle: "App Profiles",
-                suffix: "set it there, no trigger phrase needed."
-            ) { page = .appProfiles }
         }
         .onAppear(perform: consumePendingText)
         .onChange(of: app.pendingTemplateText) { _, _ in consumePendingText() }
         .sheet(isPresented: $showingEditor) { templateEditor }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Templates")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Restructure a transcript — say the trigger, get the shape, no clicking.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tipBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            MurmurIconView(icon: .help)
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Palette.warmInkSoft)
+                .padding(.top, 1)
+            Text(text)
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    /// A bare flat row directly on the glass panel — no card, no border —
+    /// matching the mockup's own treatment (unlike Voice Profile/App
+    /// Profiles, nothing else on this page needed a flat field row, so
+    /// this stays local rather than becoming a shared component).
+    private var applyByVoiceRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Apply by voice")
+                    .font(.manrope(12.5, .semibold))
+                    .foregroundStyle(Palette.warmInk)
+                Text("Say a template's trigger phrase to reshape a dictation automatically")
+                    .font(.manrope(11))
+                    .foregroundStyle(Palette.warmInkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 16)
+            WarmToggle(isOn: $voiceTemplatesEnabled)
+                .onChange(of: voiceTemplatesEnabled) { _, newValue in
+                    Settings.voiceTemplatesEnabled = newValue
+                }
+        }
+        .padding(.horizontal, 4)
     }
 
     private func templateCard(_ template: NoteTemplate) -> some View {
@@ -187,6 +160,132 @@ struct TemplatesPage: View {
             voiceEnabled: voiceTemplatesEnabled,
             onSelect: { selectedTemplateID = template.id },
             onDelete: template.isBuiltIn ? nil : { deleteCustomTemplate(template) })
+    }
+
+    private var newTemplateCard: some View {
+        Button {
+            editorName = ""
+            editorInstructions = ""
+            editorTrigger = ""
+            showingEditor = true
+        } label: {
+            HStack(spacing: 7) {
+                MurmurIconView(icon: .plus).frame(width: 14, height: 14)
+                Text("New template").font(.manrope(12, .semibold))
+            }
+            .foregroundStyle(Palette.warmInkSoft)
+            .frame(maxWidth: .infinity, minHeight: 78)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .foregroundStyle(Palette.warmDivider))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleButtonStyle(scale: 0.98))
+    }
+
+    private var transcriptCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            TextEditor(text: $inputText)
+                .font(.manrope(13))
+                .foregroundStyle(Palette.warmInk)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 110)
+                .overlay(alignment: .topLeading) {
+                    if inputText.isEmpty {
+                        Text("Paste or dictate a transcript, or send one in from History…")
+                            .font(.manrope(13))
+                            .italic()
+                            .foregroundStyle(Palette.warmInkFaint)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+            HStack(spacing: 10) {
+                Button(action: generate) {
+                    HStack(spacing: 7) {
+                        if running {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            MurmurIconView(icon: .trans).frame(width: 13, height: 13)
+                        }
+                        Text(running ? "Generating…" : "Generate")
+                            .font(.manrope(12.5, .semibold))
+                    }
+                    .foregroundStyle(canGenerate ? .white : Palette.warmInkFaint)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.sm)
+                            .fill(canGenerate ? Palette.sunset : Palette.warmRowBorder))
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .disabled(!canGenerate)
+
+                if selectedTemplateID == nil {
+                    Text("Pick a shape above first")
+                        .font(.manrope(11.5))
+                        .foregroundStyle(Palette.warmInkFaint)
+                }
+                Spacer()
+                if !inputText.isEmpty {
+                    Button("Clear") { inputText = ""; result = "" }
+                        .buttonStyle(.plain)
+                        .font(.manrope(12.5, .medium))
+                        .foregroundStyle(Palette.warmInkSoft)
+                }
+            }
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        // No drop shadow, by request — same call as every other white card
+        // floating on the glass panel in this redesign.
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var resultCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Spacer()
+                IconButton(icon: .copy, help: "Copy") {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(result, forType: .string)
+                }
+                IconButton(icon: .arrowRight, help: "Paste at cursor in the app behind Murmur") {
+                    TextInserter.insert(result)
+                }
+            }
+            Text(result)
+                .font(.manrope(13))
+                .foregroundStyle(Palette.warmInk)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 18)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var relatedLink: some View {
+        HStack(spacing: 4) {
+            Text("Want a template applied automatically in one app?")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+            Button { page = .appProfiles } label: {
+                Text("App Profiles")
+                    .font(.manrope(12, .medium))
+                    .foregroundStyle(Palette.sunsetDeep)
+            }
+            .buttonStyle(.plain)
+            Text("set it there, no trigger phrase needed.")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var canGenerate: Bool {
@@ -224,6 +323,8 @@ struct TemplatesPage: View {
         }
     }
 
+    /// Deliberately left on the old dynamic palette, outside the glass
+    /// panel's light-pinned scope — see this file's own top-of-file note.
     private var templateEditor: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("New template").font(.manrope(16, .semibold))
@@ -265,7 +366,32 @@ struct TemplatesPage: View {
         .padding(24)
         .frame(width: 440)
     }
+}
 
+/// `.switch` reskinned in warm tokens — see VoiceProfileView's own
+/// `warmToggle` for the twin of this; kept as a separate local type here
+/// (rather than shared) since `private` there scopes it to that file.
+private struct WarmToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.murmurEase(0.18)) { isOn.toggle() }
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? Palette.sunset : Palette.warmDivider)
+                    .frame(width: 32, height: 19)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 15, height: 15)
+                    .padding(.horizontal, 2)
+            }
+            .frame(width: 32, height: 19)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 private struct TemplateCard: View {
@@ -284,11 +410,11 @@ private struct TemplateCard: View {
                 HStack {
                     Text(template.name)
                         .font(.manrope(12.5, .semibold))
-                        .foregroundStyle(selected ? Palette.onInk : Palette.ink)
+                        .foregroundStyle(selected ? .white : Palette.warmInk)
                     Spacer()
                     if let onDelete {
                         IconButton(icon: .trash, size: 20, iconSize: 11,
-                                   tint: selected ? Palette.onInk.opacity(0.7) : Palette.inkSoft,
+                                   tint: selected ? .white.opacity(0.7) : Palette.warmInkSoft,
                                    help: "Delete", action: onDelete)
                             .opacity(hovering ? 1 : 0)
                     }
@@ -296,14 +422,14 @@ private struct TemplateCard: View {
                 if !blurb.isEmpty {
                     Text(blurb)
                         .font(.manrope(11))
-                        .foregroundStyle(selected ? Palette.onInk.opacity(0.7) : Palette.inkSoft)
+                        .foregroundStyle(selected ? .white.opacity(0.7) : Palette.warmInkSoft)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 2)
                 if !template.voiceTrigger.isEmpty {
                     Text("Say “\(template.voiceTrigger)”")
                         .font(.manrope(10.5))
-                        .foregroundStyle(selected ? Palette.onInk.opacity(0.75) : Palette.accentText)
+                        .foregroundStyle(selected ? .white.opacity(0.75) : Palette.sunsetDeep)
                         .opacity(voiceEnabled ? 1 : 0.35)
                 }
             }
@@ -311,10 +437,10 @@ private struct TemplateCard: View {
             .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: Radius.md)
-                    .fill(selected ? Palette.ink : (hovering ? Palette.cardHover : Palette.panel)))
+                    .fill(selected ? Palette.navActivePill : (hovering ? Palette.warmRowBorder : Color.white)))
             .overlay(
                 RoundedRectangle(cornerRadius: Radius.md)
-                    .stroke(selected ? Color.clear : Palette.border, lineWidth: 1))
+                    .stroke(selected ? Color.clear : Palette.warmRowBorder, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressScaleButtonStyle(scale: 0.98))

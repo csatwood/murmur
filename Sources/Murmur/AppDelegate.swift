@@ -70,6 +70,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// the dashboard to a specific page; `AppShellRoot` picks it up and
     /// clears it, mirroring `pendingTemplateText`.
     @Published var pendingNavigateToPage: Page?
+    /// A real, newer GitHub release — set once by `checkForUpdates()` at
+    /// launch, `nil` otherwise. `AppShellRoot` presents the update sheet
+    /// via `.sheet(item:)` off this.
+    @Published var availableUpdate: AppUpdate?
 
     private let statusHUD = StatusHUDController()
 
@@ -191,6 +195,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
         }
         refreshVoiceProfileIfDue()
+        checkForUpdates()
+    }
+
+    /// Checks GitHub's own Releases API for this repo — no appcast, no
+    /// Sparkle. Silent on any failure (offline, rate-limited): a missed
+    /// check just means no sheet this launch, never an error surfaced to
+    /// the user. Skips a release the user already dismissed via "Skip
+    /// This Version", but a newer one past that still shows.
+    private func checkForUpdates() {
+        Task {
+            guard let update = await UpdateChecker.checkLatest() else { return }
+            guard update.version != Settings.skippedUpdateVersion else { return }
+            availableUpdate = update
+            let title = "Murmur \(update.version) is available"
+            // The check runs every launch, and the same real release
+            // stays "latest" across many of them — without this, each
+            // relaunch logged its own duplicate entry for a release the
+            // user had already been told about.
+            let alreadyLogged = NotificationLog.load().contains {
+                $0.kind == .updateAvailable && $0.title == title
+            }
+            guard !alreadyLogged else { return }
+            NotificationLog.add(
+                title: title,
+                message: update.notes.first ?? "A new version is ready to download.",
+                kind: .updateAvailable)
+        }
     }
 
     /// Regenerates the Voice Profile persona once enough new dictation has
@@ -251,11 +282,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         onboarding.titleVisibility = .hidden
         onboarding.titlebarAppearsTransparent = true
         // Pinned light regardless of the system/app appearance — by
-        // request, and the same idea as `Palette.rail` always staying
-        // dark: one deliberately fixed surface, this time the other
-        // direction. `Palette`'s colors resolve dynamically off the
-        // *window's* effective appearance, so overriding it here is
-        // enough; nothing in `OnboardingRoot` itself needs to change.
+        // request, and the same idea as `Palette.homeGradient` always
+        // staying its own fixed tone: one deliberately fixed surface, this
+        // time the other direction. `Palette`'s colors resolve dynamically
+        // off the *window's* effective appearance, so overriding it here
+        // is enough; nothing in `OnboardingRoot` itself needs to change.
         onboarding.appearance = NSAppearance(named: .aqua)
         onboarding.setContentSize(NSSize(width: 600, height: 780))
         onboarding.isReleasedWhenClosed = false
@@ -380,6 +411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         } else if newEngine == "parakeet" {
             parakeetEngine.preload(model: Settings.parakeetModel)
         }
+        reconcileLocaleWithEngine()
     }
 
     func setWhisperModel(_ model: String) {
@@ -388,6 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if Settings.engine == "whisper" {
             whisperEngine.preload(model: model)
         }
+        reconcileLocaleWithEngine()
     }
 
     func setWhisperCppModel(_ model: String) {
@@ -396,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if Settings.engine == "whispercpp" {
             whisperCppEngine.preload(model: model)
         }
+        reconcileLocaleWithEngine()
     }
 
     func setParakeetModel(_ model: String) {
@@ -404,11 +438,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         if Settings.engine == "parakeet" {
             parakeetEngine.preload(model: model)
         }
+        reconcileLocaleWithEngine()
+    }
+
+    /// Language codes the active recognition engine (and, for Whisper/
+    /// Parakeet, its selected model) can actually transcribe. `nil` for
+    /// Apple's on-device engine: its supported set is a fixed, per-locale
+    /// asset list that only `SpeechTranscriber` knows, which the Settings
+    /// and HUD language pickers already load and cache themselves.
+    func supportedLanguageIDs() -> [String]? {
+        switch engine {
+        case "whisper":
+            return WhisperEngine.isEnglishOnly(whisperModel)
+                ? ["en"] : WhisperEngine.supportedLanguageCodes
+        case "whispercpp":
+            if let restricted = WhisperCppEngine.restrictedLanguage(for: whisperCppModel) {
+                return [restricted]
+            }
+            return WhisperEngine.supportedLanguageCodes
+        case "parakeet":
+            return ParakeetEngine.supportedLanguageCodes(for: parakeetModel)
+        default:
+            return nil
+        }
+    }
+
+    /// Falls back to English whenever the engine or model just switched to
+    /// one that no longer covers the selected language — e.g. Parakeet v2
+    /// or Whisper's English-only Distil model, neither of which reads the
+    /// language hint at all. Without this, Settings would keep showing
+    /// (say) German while dictation silently kept transcribing as English.
+    ///
+    /// Prefers restoring the last language the user deliberately chose
+    /// over hardcoding English, if the newly active engine/model can
+    /// actually support it — e.g. briefly trying Parakeet v2 to see its
+    /// English-only label, then switching back to v3, should land back on
+    /// German, not get stuck silently on the safety fallback. Confirmed
+    /// live: this exact one-way reset is what silently turned a working
+    /// Latvian dictation setup back to English mid-session, without the
+    /// user ever explicitly choosing English again.
+    private func reconcileLocaleWithEngine() {
+        guard let supported = supportedLanguageIDs() else { return }
+        let current = String(localeID.prefix(while: { $0 != "-" })).lowercased()
+        guard !supported.contains(current) else { return }
+        if let remembered = Settings.lastNonEnglishLocaleIdentifier {
+            let rememberedCode = String(remembered.prefix(while: { $0 != "-" })).lowercased()
+            if supported.contains(rememberedCode) {
+                setLocale(remembered)
+                return
+            }
+        }
+        setLocale("en-US")
     }
 
     func setLocale(_ identifier: String) {
         Settings.localeIdentifier = identifier
         localeID = identifier
+        // Remembered so `reconcileLocaleWithEngine` can restore a
+        // deliberate non-English choice later, instead of leaving the
+        // user stuck on English once an incompatible engine/model forces
+        // a temporary fallback.
+        if String(identifier.prefix(while: { $0 != "-" })).lowercased() != "en" {
+            Settings.lastNonEnglishLocaleIdentifier = identifier
+        }
         transcriber = Transcriber(locale: Locale(identifier: identifier))
         Task.detached { [transcriber] in
             try? await transcriber.ensureModelInstalled()
@@ -479,6 +571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// produces text.
     private func recognize(fileAt url: URL) async throws -> String {
         let biasTerms = LearnedStore.biasTerms()
+        dictationLog.info(
+            "recognize: engine=\(Settings.engine, privacy: .public) locale=\(Settings.localeIdentifier, privacy: .public) parakeetReady=\(self.parakeetEngine.isReady(model: Settings.parakeetModel)) whisperReady=\(self.whisperEngine.isReady(model: Settings.whisperModel)) whisperCppReady=\(self.whisperCppEngine.isReady(model: Settings.whisperCppModel))")
         if Settings.engine == "whisper" {
             if whisperEngine.isReady(model: Settings.whisperModel) {
                 do {
@@ -488,11 +582,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 } catch {
                     lastError = "Whisper engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."
+                    dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
                 whisperEngine.preload(model: Settings.whisperModel)
                 lastError = "Whisper model is still preparing — used Apple " +
                     "engine for this dictation. Whisper takes over when ready."
+                dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
         } else if Settings.engine == "whispercpp" {
             if whisperCppEngine.isReady(model: Settings.whisperCppModel) {
@@ -503,11 +599,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 } catch {
                     lastError = "whisper.cpp engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."
+                    dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
                 whisperCppEngine.preload(model: Settings.whisperCppModel)
                 lastError = "whisper.cpp model is still preparing — used Apple " +
                     "engine for this dictation. whisper.cpp takes over when ready."
+                dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
         } else if Settings.engine == "parakeet" {
             if parakeetEngine.isReady(model: Settings.parakeetModel) {
@@ -518,13 +616,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 } catch {
                     lastError = "Parakeet engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."
+                    dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
                 parakeetEngine.preload(model: Settings.parakeetModel)
                 lastError = "Parakeet model is still preparing — used Apple " +
                     "engine for this dictation. Parakeet takes over when ready."
+                dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
         }
+        dictationLog.info(
+            "recognize: falling back to Apple engine, transcriber.locale=\(self.transcriber.locale.identifier, privacy: .public)")
         return try await transcriber.transcribe(fileAt: url, biasTerms: biasTerms)
     }
 
@@ -717,22 +819,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 let style = AppProfileStore.style(forBundleID: resolvedBundleID)
                 dictationLog.info("style resolved: \(style.rawValue, privacy: .public)")
 
+                // Personal-correction stores are English-only by nature:
+                // `LearnedStore` holds mishearing fixes, and `TextFormatter`'s
+                // dictionary holds spellings, both learned from past
+                // *English* dictations. Applied to another language, a short
+                // "heard" trigger (e.g. "up", "there") can exact-word-match a
+                // coincidental token in the transcript and get swapped for
+                // its English "intended" text — corrupting part of an
+                // otherwise-correct non-English sentence (this is what was
+                // silently reintroducing the Latvian-dictation bug even
+                // after Harper below was fixed). Harper has the same problem
+                // for the same reason, just for spelling/grammar instead of
+                // personal corrections.
+                let isEnglishDictation =
+                    String(Settings.localeIdentifier.prefix(while: { $0 != "-" }))
+                    .lowercased() == "en"
+                dictationLog.info(
+                    "locale gate: Settings.localeIdentifier=\(Settings.localeIdentifier, privacy: .public) engine=\(Settings.engine, privacy: .public) parakeetModel=\(Settings.parakeetModel, privacy: .public) isEnglishDictation=\(isEnglishDictation)")
+
                 var formatted: String
                 if style.skipsAllProcessing {
                     // Raw: exact words, no cleanup, no AI. For terminals and
                     // code editors, where "corrections" would be corruption.
                     formatted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                    formatted = LearnedStore.apply(in: formatted)
+                    if isEnglishDictation {
+                        formatted = LearnedStore.apply(in: formatted)
+                    }
                     formatted = SnippetStore.expand(in: formatted)
                 } else {
-                    formatted = TextFormatter().format(raw)
-                    formatted = LearnedStore.apply(in: formatted)
+                    formatted = TextFormatter(
+                        dictionary: isEnglishDictation ? TextFormatter.loadDictionary() : [:]
+                    ).format(raw)
+                    if isEnglishDictation {
+                        formatted = LearnedStore.apply(in: formatted)
+                    }
                     formatted = SnippetStore.expand(in: formatted)
 
                     // Everything below needs the model, and the spoken
                     // trigger must not be stripped out of the text unless
                     // something is actually going to act on it.
-                    if !formatted.isEmpty, rewriteEngine.isAvailable {
+                    //
+                    // English only — see `isEnglishDictation` above, same
+                    // reasoning as Harper and the correction stores: the
+                    // *named* styles (Formal/Casual/…) each say "keep the
+                    // meaning, language and approximate length", but the
+                    // baseline `cleanupInstructions` used here for the
+                    // default "As spoken" style has no such anchor — it just
+                    // says "fix grammar and punctuation." Apple Intelligence
+                    // doesn't officially support Latvian (or most languages
+                    // beyond a handful), so asked to "fix grammar" on it
+                    // without being told to preserve the language, it edits
+                    // word endings toward whatever it's more confident
+                    // about — not literal English words, but exactly the
+                    // "half right, half mangled" damage this was.
+                    if !formatted.isEmpty, rewriteEngine.isAvailable, isEnglishDictation {
                         // A spoken trigger ("meeting notes, we discussed…")
                         // beats the app's standing rule: it's an explicit
                         // request for this one dictation.
@@ -791,7 +931,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // this still improves grammar on Macs where the pass
                     // above was skipped entirely. Milliseconds, not worth a
                     // status message next to a multi-second LLM round-trip.
-                    if !formatted.isEmpty {
+                    //
+                    // English only — see `isEnglishDictation` above: Harper
+                    // hardcodes an English parser/dictionary, so it
+                    // "corrects" other languages' real words into the
+                    // nearest English one instead of leaving them alone.
+                    if !formatted.isEmpty, isEnglishDictation {
                         formatted = HarperChecker.fix(formatted)
                     }
                 }
@@ -802,6 +947,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     dictationLog.info("history: added, inserting text")
                     refreshVoiceProfileIfDue()
                     if AXIsProcessTrusted() {
+                        // Dictating into Murmur's own window (Scratchpad,
+                        // Ask, Transforms' try-it box, …) is the one case
+                        // where the paste target and the app posting the
+                        // synthetic ⌘V are the same process. The HUD panels
+                        // are deliberately non-activating so they never
+                        // steal focus from *another* app mid-dictation —
+                        // but the several-second gap between "recording
+                        // stops" and "text is ready" is enough for Murmur
+                        // itself to lose active-app status in the interim
+                        // (e.g. the user's attention/pointer drifting to
+                        // another window), which the other-app path never
+                        // had to survive since it was never Murmur's status
+                        // to lose. Reactivating right before the paste
+                        // restores it without touching the window's own
+                        // first responder, which AppKit preserves across an
+                        // app losing and regaining active status.
+                        if resolvedBundleID == Bundle.main.bundleIdentifier {
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
                         TextInserter.insert(formatted)
                     } else {
                         // Can't synthesize ⌘V without Accessibility — never
@@ -852,6 +1016,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// users may go a whole session without ever hitting the condition.
     private func promptForAppProfile(bundleID: String, appName: String) {
         Settings.promptedBundleIDs.insert(bundleID)
+        // Logged unconditionally, ahead of the system-notification
+        // permission check below — the titlebar bell is Murmur's own
+        // record, not gated on whether the user allowed system banners.
+        NotificationLog.add(
+            title: "Format for \(appName) automatically?",
+            message: "Murmur can give \(appName) its own tone and structure — set it "
+                + "up once and every dictation there uses it.",
+            kind: .appProfileSuggestion)
         Task {
             let center = UNUserNotificationCenter.current()
             let granted = (try? await center.requestAuthorization(options: [.alert, .sound]))
@@ -1036,6 +1208,16 @@ enum Settings {
         set { defaults.set(newValue, forKey: "locale") }
     }
 
+    /// The last non-English locale the user deliberately selected — kept
+    /// separately from `localeIdentifier` so `reconcileLocaleWithEngine`
+    /// can restore it after a temporary English fallback (forced by
+    /// switching to an English-only engine/model) instead of leaving the
+    /// user stuck on English once the original engine/model is reselected.
+    static var lastNonEnglishLocaleIdentifier: String? {
+        get { defaults.string(forKey: "lastNonEnglishLocale") }
+        set { defaults.set(newValue, forKey: "lastNonEnglishLocale") }
+    }
+
     /// Recognition engine: "apple" (instant), "whisper" or "whispercpp"
     /// (precise, Whisper-family), or "parakeet" (precise, fast).
     static var engine: String {
@@ -1071,6 +1253,14 @@ enum Settings {
     static var handsFreeAutoStop: Bool {
         get { defaults.object(forKey: "handsFreeAutoStop") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "handsFreeAutoStop") }
+    }
+
+    /// The version the user chose "Skip This Version" for, if any — that
+    /// specific release won't show the update sheet again, but a later
+    /// one still will.
+    static var skippedUpdateVersion: String? {
+        get { defaults.string(forKey: "skippedUpdateVersion") }
+        set { defaults.set(newValue, forKey: "skippedUpdateVersion") }
     }
 
     /// Say a template's trigger phrase ("meeting notes", "email draft", …)

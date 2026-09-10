@@ -2,53 +2,81 @@ import SwiftUI
 
 // MARK: - Insights
 //
+// Redesigned per the "Main" canvas (Insights.dc.html): same `GlassPanelPage`
+// shell as Home, warm ink/sunset palette instead of the shared dynamic
+// `Palette`. The line-chart math (monotone interpolation, hover crosshair,
+// end-label placement) is untouched — this is a View-layer rewrite only.
+//
 // The design replaced the old saturated bar chart with a line + soft area
-// wash (the dataviz rule: "trend over time" is a line, not bars), a 2px
+// wash (the dataviz rule: "trend over time" is a line, not bars), a 2.5px
 // stroke, recessive hairline gridlines, a direct end-label on the latest
-// point, and a hover crosshair + tooltip.
+// point, and a hover crosshair + tooltip (the last two aren't in the static
+// mockup — added because a 7-point chart with no way to read exact values
+// per day is a worse chart, not a more faithful one).
 
 struct InsightsPage: View {
     @ObservedObject var app: AppDelegate
     @State private var hoverIndex: Int?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(title: "Insights", subtitle: "Word-count trends over time.")
+        GlassPanelPage {
+            VStack(alignment: .leading, spacing: 0) {
+                header
 
-            // `.pcard flat stat-row`: a flat strip on the pane with
-            // hairline dividers — no card fill, not three boxed cards.
-            Card(flat: true) {
-                HStack(alignment: .top, spacing: 0) {
-                    statTile(.lines, "\(app.entries.count)", "dictations",
-                             trend: dictationsTrend, isFirst: true)
-                    statTile(.wave, compact(totalWords), "total words",
-                             trend: wordsTrend, isFirst: false)
-                    statTile(.calendar, avgWords, "avg words / dictation",
-                             trend: nil, isFirst: false)
+                // `.pcard flat stat-row`: a flat strip on the pane with
+                // hairline dividers — no card fill, not three boxed cards.
+                Card(flat: true) {
+                    HStack(alignment: .top, spacing: 0) {
+                        statTile(.lines, "\(app.entries.count)", "dictations",
+                                 trend: dictationsTrend, isFirst: true)
+                        statTile(.wave, compact(totalWords), "total words",
+                                 trend: wordsTrend, isFirst: false)
+                        statTile(.calendar, avgWords, "avg words / dictation",
+                                 trend: nil, isFirst: false)
+                    }
                 }
+                .padding(.top, 24)
+
+                chartCard
+                    .padding(.top, 26)
             }
-
-            Card {
-                HStack {
-                    Text("Words dictated")
-                        .font(.manrope(13, .semibold))
-                        .foregroundStyle(Palette.ink)
-                    Spacer()
-                    Text("Last 7 days")
-                        .font(.manrope(11.5))
-                        .foregroundStyle(Palette.inkFaint)
-                }
-                .padding(.bottom, 16)
-
-                TrendChart(points: last7Days, hoverIndex: $hoverIndex)
-            }
-            // Slightly more breathing room between the KPI strip and the
-            // chart than the design's 16pt, per review.
-            .padding(.top, 26)
-
-            Spacer(minLength: 0)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Insights")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Word-count trends over time.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var chartCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .lastTextBaseline) {
+                Text("Words dictated")
+                    .font(.manrope(13, .semibold))
+                    .foregroundStyle(Palette.warmInk)
+                Spacer()
+                Text("Last 7 days")
+                    .font(.manrope(11.5))
+                    .foregroundStyle(Palette.warmInkFaint)
+            }
+            TrendChart(points: last7Days, hoverIndex: $hoverIndex)
+                .padding(.top, 20)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // No drop shadow, by request (same call as Scratchpad's editor
+        // card and Ask Murmur's composer) — it read as an odd smear along
+        // the bottom edge sitting on the frosted glass panel.
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func statTile(
@@ -64,15 +92,15 @@ struct InsightsPage: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(value)
                 .font(.manrope(27))
-                .tracking(-0.27)
-                .foregroundStyle(Palette.ink)
+                .tracking(-0.54)
+                .foregroundStyle(Palette.warmInk)
             HStack(spacing: 5) {
                 MurmurIconView(icon: icon)
                     .frame(width: 12, height: 12)
-                    .foregroundStyle(Palette.inkSoft)
+                    .foregroundStyle(Palette.warmInkFaint)
                 Text(label)
                     .font(.manrope(11.5))
-                    .foregroundStyle(Palette.inkSoft)
+                    .foregroundStyle(Palette.warmInkFaint)
             }
             .padding(.top, 4)
             if let trend {
@@ -82,7 +110,7 @@ struct InsightsPage: View {
                         .rotationEffect(.degrees(-45))
                     Text(trend).font(.manrope(12, .semibold))
                 }
-                .foregroundStyle(Palette.trendUp)
+                .foregroundStyle(Palette.sunsetDeep)
                 .padding(.top, 6)
             }
         }
@@ -94,7 +122,7 @@ struct InsightsPage: View {
             // 20pt leading inset), the same seam `.stat-row > div` draws it
             // on in the design.
             if !isFirst {
-                Rectangle().fill(Palette.border).frame(width: 1)
+                Rectangle().fill(Palette.warmDivider).frame(width: 1)
                     .padding(.leading, -20)
             }
         }
@@ -163,9 +191,33 @@ struct InsightsPage: View {
 
 // MARK: - Trend chart
 
+/// Reports the hover tooltip's own rendered size back up so its position
+/// can be derived from its *actual* height instead of a guessed constant.
+private struct TooltipSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
 struct TrendChart: View {
     let points: [(label: String, value: Int)]
     @Binding var hoverIndex: Int?
+
+    /// The hover tooltip's own measured size (see `SizeKey` below) — its
+    /// position is derived from this rather than a guessed fixed offset,
+    /// so the gap above the curve is exact regardless of font metrics.
+    @State private var tooltipSize: CGSize = .zero
+
+    /// Fixed clearance between the tooltip's bottom edge and the point it
+    /// describes. Previously the tooltip was centered a flat 34pt above
+    /// the point with no regard for its own height, which happened to
+    /// leave a reasonable gap only by coincidence for a short tooltip —
+    /// against Manrope's actual line height here, the box's bottom edge
+    /// landed right on the curve instead, worst right at a peak (the one
+    /// case that most needs clearance). Positioning off the tooltip's own
+    /// measured height fixes this everywhere, not just at the extremes.
+    private static let tooltipGap: CGFloat = 10
 
     /// The plot and the y-axis labels must be laid out at exactly the same
     /// height or the ticks stop lining up with their gridlines. A seven-
@@ -207,7 +259,7 @@ struct TrendChart: View {
                 ForEach(ticks, id: \.self) { tick in
                     Text("\(tick)")
                         .font(.manrope(10))
-                        .foregroundStyle(Palette.inkFaint)
+                        .foregroundStyle(Palette.warmInkFainter)
                         .alignmentGuide(.top) { d in d.height / 2 }
                         .offset(y: gridY(for: tick, in: plotHeight))
                 }
@@ -228,17 +280,17 @@ struct TrendChart: View {
                                 p.move(to: CGPoint(x: 0, y: y))
                                 p.addLine(to: CGPoint(x: w, y: y))
                             }
-                            .stroke(Palette.border, lineWidth: 1)
+                            .stroke(Palette.warmRowBorder, lineWidth: 1)
                         }
 
                         // Area wash — ~10% opacity, never a saturated block
                         smoothPath(coords, closedTo: h)
-                            .fill(Palette.chartMark.opacity(0.1))
+                            .fill(Palette.sunset.opacity(0.1))
 
-                        // 2px line
+                        // 2.5px line
                         smoothPath(coords, closedTo: nil)
-                            .stroke(Palette.chartMark,
-                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                            .stroke(Palette.sunset,
+                                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
 
                         // Crosshair + hovered point
                         if let i = hoverIndex, coords.indices.contains(i) {
@@ -246,9 +298,9 @@ struct TrendChart: View {
                                 p.move(to: CGPoint(x: coords[i].x, y: 0))
                                 p.addLine(to: CGPoint(x: coords[i].x, y: h))
                             }
-                            .stroke(Palette.inkFaint, lineWidth: 1)
+                            .stroke(Palette.warmDivider, lineWidth: 1)
                             Circle()
-                                .fill(Palette.chartMark)
+                                .fill(Palette.sunset)
                                 .frame(width: 8, height: 8)
                                 .position(coords[i])
                         }
@@ -256,9 +308,9 @@ struct TrendChart: View {
                         // Direct end-label on the most recent point
                         if let last = coords.last, let value = points.last?.value {
                             Circle()
-                                .fill(Palette.chartMark)
+                                .fill(Palette.sunset)
                                 .frame(width: 8, height: 8)
-                                .overlay(Circle().stroke(Palette.card, lineWidth: 2))
+                                .overlay(Circle().stroke(.white, lineWidth: 2))
                                 .position(last)
                             // `.line-chart-end-label`:
                             // `transform: translate(-50%, calc(-100% - 8px))`
@@ -272,13 +324,15 @@ struct TrendChart: View {
                             // ended up passing through the label instead of
                             // under it. The design never clamps: the card
                             // carries its own ~20pt padding around the
-                            // plot, `Card` doesn't clip its content, so a
-                            // few points of horizontal overflow from a
-                            // right-edge label lands harmlessly in that
-                            // padding instead of overlapping the curve.
+                            // plot, the chart card doesn't clip its
+                            // content, so a few points of horizontal
+                            // overflow from a right-edge label lands
+                            // harmlessly in that padding instead of
+                            // overlapping the curve.
                             Text("\(value)")
-                                .font(.manrope(12, .medium))
-                                .foregroundStyle(Palette.chartMark)
+                                .font(.manrope(12, .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(Palette.sunset)
                                 .fixedSize()
                                 .position(x: last.x, y: max(last.y - 17, 9))
                         }
@@ -288,17 +342,39 @@ struct TrendChart: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("\(points[i].value)")
                                     .font(.manrope(12, .semibold))
-                                    .foregroundStyle(Palette.ink)
+                                    .foregroundStyle(Palette.warmInk)
                                 Text(points[i].label)
                                     .font(.manrope(10))
-                                    .foregroundStyle(Palette.inkSoft)
+                                    .foregroundStyle(Palette.warmInkSoft)
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
-                            .background(Palette.panel, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.border, lineWidth: 1))
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.warmDivider, lineWidth: 1))
+                            .background(
+                                GeometryReader { tooltipGeo in
+                                    Color.clear
+                                        .preference(key: TooltipSizeKey.self, value: tooltipGeo.size)
+                                })
+                            // Bottom edge sits `tooltipGap` above the point,
+                            // full stop — never clamped back down toward it
+                            // (the previous bug: flooring this pulled the
+                            // tooltip down toward a high peak once the old
+                            // fixed offset went negative, landing it right
+                            // on the curve instead of above it, worst
+                            // exactly where clearance mattered most) and
+                            // never guessed from font metrics (the other
+                            // bug: a flat 34pt offset assumed a tooltip
+                            // height that didn't match Manrope's real line
+                            // height, so even the "un-clamped" version still
+                            // touched the curve at every point, not just
+                            // peaks). Floating above the plot's own top
+                            // edge is fine — the chart card's padding
+                            // absorbs it, same as the end-label's horizontal
+                            // overflow above.
                             .position(x: min(max(coords[i].x, 40), w - 40),
-                                      y: max(coords[i].y - 34, 18))
+                                      y: coords[i].y - Self.tooltipGap - tooltipSize.height / 2)
+                            .onPreferenceChange(TooltipSizeKey.self) { tooltipSize = $0 }
                         }
                     }
                     .contentShape(Rectangle())
@@ -318,12 +394,16 @@ struct TrendChart: View {
                 // the points themselves run edge to edge. Centering each
                 // label in an equal-width column instead (as this did)
                 // offsets every label from the dot it belongs to, worst at
-                // the two ends.
+                // the two ends. The last day (today) is always bold/dark,
+                // matching the mockup's own static emphasis — every other
+                // day is faint unless actively hovered.
                 HStack(spacing: 4) {
                     ForEach(Array(points.enumerated()), id: \.offset) { index, point in
+                        let isLast = index == points.count - 1
+                        let isHighlighted = isLast || index == hoverIndex
                         Text(point.label)
-                            .font(.manrope(10.5))
-                            .foregroundStyle(index == hoverIndex ? Palette.ink : Palette.inkSoft)
+                            .font(.manrope(10.5, isLast ? .semibold : .regular))
+                            .foregroundStyle(isHighlighted ? Palette.warmInk : Palette.warmInkFainter)
                             .fixedSize()
                         if index != points.count - 1 { Spacer(minLength: 0) }
                     }

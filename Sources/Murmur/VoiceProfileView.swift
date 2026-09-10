@@ -3,9 +3,18 @@ import SwiftUI
 
 // MARK: - Voice Profile / Voice Training
 //
-// The design's Voice Profile page: the persona card Home only teases, the
-// teach-a-word recorder, and the learned-correction history — all three on
-// one page instead of the old bare form + list.
+// Redesigned per the "Main" canvas (VoiceProfile.dc.html): same
+// `GlassPanelPage` shell as the other redesigned pages, warm palette
+// instead of the shared dynamic `Palette`. `TrainingModel` (the actual
+// recording/transcription/learning logic) is untouched — this is a
+// View-layer rewrite only.
+//
+// The toggle row, chips, and tip banner are bespoke to this page rather
+// than the shared `FieldRow`/`MurmurToggle`/`ChipRow`/`PageTip` components
+// — those are still tuned for the old dynamic/lime palette and shared with
+// pages that haven't been redesigned yet (Settings uses `MurmurToggle` and
+// `FieldRow` extensively), so forking them here keeps this page exact
+// without changing how they look anywhere else.
 
 @MainActor
 final class TrainingModel: ObservableObject {
@@ -88,86 +97,80 @@ struct TrainingPage: View {
     @State private var useVoiceProfile = Settings.useVoiceProfile
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "Voice Profile",
-                subtitle: "Say a word Murmur keeps mishearing — it learns the correction, "
-                    + "and your persona on Home updates as you go.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    personaCard
+                        .padding(.top, 18)
+                    useVoiceRow
+                    teachCard
+                        .padding(.top, 4)
 
-            personaCard
-
-            // The profile used to be display-only. Now it feeds every
-            // rewrite and every Ask answer, so it needs an off switch.
-            Card(flat: true) {
-                FieldRow(
-                    label: "Use my voice in rewrites",
-                    detail: "Style and template rewrites keep your vocabulary and "
-                        + "phrasing, and Ask answers read your notes in your terms.",
-                    isLast: true
-                ) {
-                    MurmurToggle(isOn: $useVoiceProfile)
-                        .onChange(of: useVoiceProfile) { _, newValue in
-                            Settings.useVoiceProfile = newValue
-                        }
-                }
-            }
-            .padding(.top, 4)
-            teachCard.padding(.top, 16)
-
-            SectionHead(title: "Learned corrections", trailing: correctionsCount)
-            Text("Also learned automatically when you fix a transcript in History (pencil icon).")
-                .font(.manrope(11.5))
-                .foregroundStyle(Palette.inkSoft)
-                .padding(.bottom, 10)
-
-            if learned.corrections.isEmpty {
-                Text("Nothing learned yet — corrections you make while dictating will show up here.")
-                    .font(.manrope(12.5))
-                    .italic()
-                    .foregroundStyle(Palette.inkFaint)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 24)
-            } else {
-                VStack(spacing: 0) {
-                    let items = Array(learned.corrections.reversed())
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, correction in
-                        CorrectionRow(correction: correction) {
-                            var data = LearnedStore.load()
-                            data.corrections.removeAll { $0.id == correction.id }
-                            LearnedStore.save(data)
-                            learned = data
-                        }
-                        if index != items.count - 1 {
-                            Rectangle().fill(Palette.border).frame(height: 1)
-                        }
+                    HStack(alignment: .lastTextBaseline) {
+                        Text("Learned corrections")
+                            .font(.manrope(14, .semibold))
+                            .foregroundStyle(Palette.warmInk)
+                        Spacer()
+                        Text(correctionsCount)
+                            .font(.manrope(11.5))
+                            .foregroundStyle(Palette.warmInkFaint)
                     }
+                    .padding(.top, 22)
+                    Text("Also learned automatically when you fix a transcript in History (pencil icon).")
+                        .font(.manrope(11.5))
+                        .foregroundStyle(Palette.warmInkFaint)
+                        .padding(.top, 4)
+                        .padding(.bottom, 12)
+
+                    correctionsList
+
+                    if !learned.terms.isEmpty {
+                        Text("Vocabulary hints: " + learned.terms.joined(separator: ", "))
+                            .font(.manrope(11.5))
+                            .foregroundStyle(Palette.warmInkFaint)
+                            .padding(.top, 12)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    relatedLink
+                        .padding(.top, 14)
                 }
             }
-
-            if !learned.terms.isEmpty {
-                Text("Vocabulary hints: " + learned.terms.joined(separator: ", "))
-                    .font(.manrope(11.5))
-                    .foregroundStyle(Palette.inkFaint)
-                    .padding(.top, 12)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            RelatedLink(
-                prefix: "Setting a word manually instead?",
-                linkTitle: "Dictionary",
-                suffix: "lets you define exact replacements."
-            ) { page = .dictionary }
         }
         .onAppear { learned = LearnedStore.load() }
     }
 
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Voice Profile")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Say a word Murmur keeps mishearing — it learns the correction, "
+                 + "and your persona on Home updates as you go.")
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkFaint)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 620, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Persona
+
     private var personaCard: some View {
-        Card {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("YOUR PERSONA")
                     .font(.manrope(11, .medium))
                     .kerning(0.7)
-                    .foregroundStyle(Palette.inkSoft)
+                    .foregroundStyle(Palette.warmInkFaint)
                 Spacer()
                 if app.voiceProfile != nil {
                     IconButton(icon: .refresh, help: "Refresh profile") {
@@ -177,42 +180,121 @@ struct TrainingPage: View {
             }
             Text(app.voiceProfile?.title ?? "Still listening…")
                 .font(.manrope(20, .medium))
-                .foregroundStyle(Palette.ink)
+                .foregroundStyle(Palette.warmInk)
                 .padding(.top, 8)
             Text(app.voiceProfile?.summary
                  ?? "Dictate a bit more and Murmur will sketch your persona from what you talk about.")
                 .font(.manrope(13))
-                .foregroundStyle(Palette.inkSoft)
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
             if let traits = app.voiceProfile?.traits, !traits.isEmpty {
-                ChipRow(items: traits).padding(.top, 10)
+                HStack(spacing: 8) {
+                    ForEach(traits, id: \.self) { warmChip($0) }
+                }
+                .padding(.top, 10)
             }
-            Divider().overlay(Palette.border).padding(.top, 14)
+            Rectangle().fill(Palette.warmRowBorder).frame(height: 1).padding(.top, 14)
             Text((Locale.current.localizedString(forIdentifier: app.localeID) ?? app.localeID)
                  + " · Hold \(app.hotkey.displayName)")
                 .font(.manrope(12))
-                .foregroundStyle(Palette.inkSoft)
+                .foregroundStyle(Palette.warmInkSoft)
                 .padding(.top, 12)
         }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        // Without this, the card sizes to its own widest line of content
+        // instead of the full glass panel — every card here is short text
+        // and pill chips, none of which need the full width to lay out, so
+        // the card was shrink-wrapping to that and (being left-aligned)
+        // leaving the leftover space stranded on the right instead of
+        // split evenly on both sides.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
+    private func warmChip(_ text: String) -> some View {
+        Text(text)
+            .font(.manrope(11.5))
+            .foregroundStyle(Palette.warmInkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(Color.white, in: Capsule())
+            .overlay(Capsule().stroke(Palette.warmRowBorder, lineWidth: 1))
+    }
+
+    // MARK: Use my voice toggle
+    //
+    // The profile used to be display-only. Now it feeds every rewrite and
+    // every Ask answer, so it needs an off switch. A plain row directly on
+    // the glass panel, not a card — matches the mockup, which gives this
+    // no fill of its own (`padding: 14px 4px`, no background).
+
+    private var useVoiceRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use my voice in rewrites")
+                    .font(.manrope(12.5, .semibold))
+                    .foregroundStyle(Palette.warmInk)
+                Text("Style and template rewrites keep your vocabulary and "
+                     + "phrasing, and Ask answers read your notes in your terms.")
+                    .font(.manrope(11))
+                    .lineSpacing(2)
+                    .foregroundStyle(Palette.warmInkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 16)
+            warmToggle
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 14)
+    }
+
+    /// `MurmurToggle` with a fixed accent — that shared component's
+    /// "on" fill is `Palette.toggleOn` (the old dynamic/lime accent), and
+    /// it's used throughout Settings, so it isn't touched here; this is a
+    /// one-off matching Main.dc.html's own sunset-orange track exactly.
+    private var warmToggle: some View {
+        Button {
+            withAnimation(.murmurEase(0.18)) {
+                useVoiceProfile.toggle()
+                Settings.useVoiceProfile = useVoiceProfile
+            }
+        } label: {
+            ZStack(alignment: useVoiceProfile ? .trailing : .leading) {
+                Capsule()
+                    .fill(useVoiceProfile ? Palette.sunset : Palette.warmDivider)
+                    .frame(width: 32, height: 19)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 15, height: 15)
+                    .padding(.horizontal, 2)
+            }
+            .frame(width: 32, height: 19)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Teach a word
+
     private var teachCard: some View {
-        Card {
+        VStack(alignment: .leading, spacing: 0) {
             Text("TEACH A WORD")
                 .font(.manrope(11, .medium))
                 .kerning(0.7)
-                .foregroundStyle(Palette.inkSoft)
-                .padding(.bottom, 12)
+                .foregroundStyle(Palette.warmInkFaint)
 
             HStack(spacing: 8) {
                 TextField("word or phrase, e.g. “Søren” or “Baseten”", text: $target)
                     .textFieldStyle(.plain)
                     .font(.manrope(12.5))
+                    .foregroundStyle(Palette.warmInk)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: Radius.sm))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmRowBorder, lineWidth: 1))
 
                 Button {
                     model.toggle(app: app, target: target)
@@ -229,14 +311,14 @@ struct TrainingPage: View {
                         }
                     }
                     .foregroundStyle(model.isRecording
-                                     ? .white : (visuallyMuted ? Palette.inkFaint : Palette.accentInk))
+                                     ? .white : (visuallyMuted ? Palette.warmInkFainter : .white))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 9)
                     .background(
                         RoundedRectangle(cornerRadius: Radius.sm)
                             .fill(visuallyMuted
-                                  ? AnyShapeStyle(Palette.cardHover)
-                                  : AnyShapeStyle(model.isRecording ? Palette.danger : Palette.accent)))
+                                  ? AnyShapeStyle(Palette.warmRowBorder)
+                                  : AnyShapeStyle(model.isRecording ? Palette.danger : Palette.sunset)))
                 }
                 .buttonStyle(PressScaleButtonStyle())
                 .disabled(recordDisabled)
@@ -245,6 +327,7 @@ struct TrainingPage: View {
                     ProgressView().controlSize(.small)
                 }
             }
+            .padding(.top, 12)
 
             if model.isRecording {
                 HStack(spacing: 6) {
@@ -257,16 +340,35 @@ struct TrainingPage: View {
             } else if let result = model.result {
                 Text(result)
                     .font(.manrope(12.5, .medium))
-                    .foregroundStyle(model.resultIsError ? Palette.danger : Palette.accentText)
+                    .foregroundStyle(model.resultIsError ? Palette.danger : Palette.sunsetDeep)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 10)
                     .onAppear { learned = LearnedStore.load() }
             }
 
-            PageTip(text: "Repeat a word 2–3 times — different mishearings each become "
-                    + "their own correction.")
-                .padding(.top, 12)
+            HStack(alignment: .top, spacing: 8) {
+                MurmurIconView(icon: .help)
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(Palette.warmInkSoft)
+                    .padding(.top, 1)
+                Text("Repeat a word 2–3 times — different mishearings each become "
+                     + "their own correction.")
+                    .font(.manrope(12.5))
+                    .lineSpacing(3)
+                    .foregroundStyle(Palette.warmInkSoft)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.top, 12)
         }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        // Same fix as personaCard above: without this the card shrinks to
+        // its own content's width instead of the full glass panel.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var recordDisabled: Bool {
@@ -291,6 +393,62 @@ struct TrainingPage: View {
         let n = learned.corrections.count
         return "\(n) \(n == 1 ? "correction" : "corrections")"
     }
+
+    // MARK: Learned corrections
+
+    private var correctionsList: some View {
+        Group {
+            if learned.corrections.isEmpty {
+                Text("Nothing learned yet — corrections you make while dictating will show up here.")
+                    .font(.manrope(12.5))
+                    .italic()
+                    .foregroundStyle(Palette.warmInkFaint)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            } else {
+                VStack(spacing: 0) {
+                    let items = Array(learned.corrections.reversed())
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, correction in
+                        CorrectionRow(correction: correction) {
+                            var data = LearnedStore.load()
+                            data.corrections.removeAll { $0.id == correction.id }
+                            LearnedStore.save(data)
+                            learned = data
+                        }
+                        if index != items.count - 1 {
+                            Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+                // Same fix as personaCard/teachCard above: rows are all
+                // short text, so without this the card shrinks to their
+                // width instead of the full glass panel.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+        }
+    }
+
+    private var relatedLink: some View {
+        HStack(spacing: 4) {
+            Text("Setting a word manually instead?")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+            Button { page = .dictionary } label: {
+                Text("Dictionary")
+                    .font(.manrope(12, .medium))
+                    .foregroundStyle(Palette.sunsetDeep)
+            }
+            .buttonStyle(.plain)
+            Text("lets you define exact replacements.")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
 }
 
 private struct CorrectionRow: View {
@@ -300,17 +458,17 @@ private struct CorrectionRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            HStack(spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("“\(correction.heard)”")
-                    .foregroundStyle(Palette.inkSoft)
-                Text("→").foregroundStyle(Palette.inkFaint)
+                    .foregroundStyle(Palette.warmInkSoft)
+                Text("→").foregroundStyle(Palette.warmInkFaint)
                 Text("“\(correction.intended)”")
                     .font(.manrope(13, .medium))
-                    .foregroundStyle(Palette.ink)
+                    .foregroundStyle(Palette.warmInk)
                 if correction.timesSeen > 1 {
                     Text("×\(correction.timesSeen)")
                         .font(.manrope(11))
-                        .foregroundStyle(Palette.inkFaint)
+                        .foregroundStyle(Palette.warmInkFainter)
                 }
             }
             .font(.manrope(13))
@@ -324,7 +482,7 @@ private struct CorrectionRow: View {
         .padding(.vertical, 15)
         .background(
             RoundedRectangle(cornerRadius: Radius.sm)
-                .fill(hovering ? Palette.cardHover : Color.clear))
+                .fill(hovering ? Palette.warmRowBorder : Color.clear))
         // See HomeView.swift's historyRow for why this is needed: a .clear
         // background makes SwiftUI treat the row's empty space as outside
         // the hoverable region until this forces the whole padded frame to

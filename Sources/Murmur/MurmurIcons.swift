@@ -132,12 +132,27 @@ enum SVGPathParser {
             }
         }
 
+        // Tracks the second control point of the most recent `C`/`c`/`S`/`s`
+        // curve, and whether the immediately preceding command was one of
+        // those four — `S`/`s`'s own first control point is the reflection
+        // of that point (or, if the preceding command wasn't a cubic curve
+        // at all, coincides with the current point instead). Per the SVG
+        // spec's own "smooth curveto" rule, §8.3.6.
+        var lastControl2 = CGPoint.zero
+        var lastWasCubicCurve = false
+
         while i < chars.count {
             skipSeparators()
             guard i < chars.count else { break }
             let cmd = chars[i]
-            guard "MmLlHhVvCcAaZz".contains(cmd) else { i += 1; continue }
+            // `S`/`s` (smooth cubic Bézier) was missing here entirely —
+            // Phosphor's own "question" icon (`.help`) is built from one,
+            // and every `S`/`s` in it was silently skipped character by
+            // character, leaving the question mark's curl rendering as a
+            // dropped, collapsed fragment instead of a curve.
+            guard "MmLlHhVvCcSsAaZz".contains(cmd) else { i += 1; continue }
             i += 1
+            let isCubicCommand = cmd == "C" || cmd == "c" || cmd == "S" || cmd == "s"
 
             switch cmd {
             case "M", "m":
@@ -182,6 +197,25 @@ enum SVGPathParser {
                     let endPoint = cmd == "c" ? CGPoint(x: current.x + end.x, y: current.y + end.y) : CGPoint(x: end.x, y: end.y)
                     path.addCurve(to: endPoint, control1: control1, control2: control2)
                     current = endPoint
+                    lastControl2 = control2
+                }
+            case "S", "s":
+                while true {
+                    guard let c2 = readPoint(), let end = readPoint() else { break }
+                    let control2 = cmd == "s" ? CGPoint(x: current.x + c2.x, y: current.y + c2.y) : CGPoint(x: c2.x, y: c2.y)
+                    let endPoint = cmd == "s" ? CGPoint(x: current.x + end.x, y: current.y + end.y) : CGPoint(x: end.x, y: end.y)
+                    let control1 = lastWasCubicCurve
+                        ? CGPoint(x: 2 * current.x - lastControl2.x, y: 2 * current.y - lastControl2.y)
+                        : current
+                    path.addCurve(to: endPoint, control1: control1, control2: control2)
+                    current = endPoint
+                    lastControl2 = control2
+                    // Set inline, not left to the trailing assignment
+                    // after this `switch` — a *second* chained segment
+                    // under this same `S`/`s` letter (implicit repeats,
+                    // same as `C`/`c` above) needs this to already read
+                    // `true` before that line is ever reached.
+                    lastWasCubicCurve = true
                 }
             case "A", "a":
                 while true {
@@ -199,6 +233,10 @@ enum SVGPathParser {
             default:
                 break
             }
+            // Reset unless this command (or the one that just ran) was a
+            // cubic curve — anything else in between means a later S/s
+            // reflects nothing and starts from the current point instead.
+            lastWasCubicCurve = isCubicCommand
         }
         return path
     }
@@ -256,9 +294,19 @@ func pts(_ values: CGFloat...) -> [CGPoint] {
 
 // MARK: - Icon set
 //
-// Ported verbatim from the design mockup's Phosphor Icons (regular weight,
-// 256×256 viewBox, 16pt stroke) rather than substituted with SF Symbols —
-// the exact-fidelity choice made for this port.
+// Phosphor Icons (regular weight, 256×256 viewBox, 16pt stroke — see
+// `MurmurIconView` below, which scales that stroke proportionally rather
+// than substituting SF Symbols), MIT-licensed and reproduced on the Legal
+// page like every other open-source component this app ships. Not
+// imported as a package — Phosphor ships as SVG/font/framework bundles
+// with no Swift target, so each icon's path/circle/line/polyline data is
+// copied in as `SVGPrimitive`s instead, verified case-by-case against
+// https://github.com/phosphor-icons/core's own `raw/regular/*.svg`
+// source rather than hand-approximated. A couple (`.snip`, `.style`)
+// don't match any single stock Phosphor icon exactly — both read as
+// reasonable small compositions of Phosphor's own primitives (a link
+// icon plus a cut mark; a horizontal fader track with circular knobs)
+// rather than a transcription drift, so they're left as they are.
 
 enum MurmurIcon {
     case home, ask, insights, scratch, dict, profile, snip, style, tpl, trans
@@ -332,13 +380,13 @@ enum MurmurIcon {
         case .settings:
             return [
                 .circle(cx: 128, cy: 128, r: 40),
-                .path("M130.05,206.11c-1.34,0-2.69,0-4,0L94,224a104.61,104.61,0,0,1-34.11-19.2l-.12-36c-.71-1.12-1.38-2.25-2-3.41L25.9,147.24a99.15,99.15,0,0,1,0-38.46l31.84-18.1c.65-1.15,1.32-2.29,2-3.41l.16-36A104.58,104.58,0,0,1,94,32l32,17.89c1.34,0,2.69,0,4,0L162,32a104.61,104.61,0,0,1,34.11,19.2l.12,36c.71,1.12,1.38,2.25,2,3.41l31.85,18.14a99.15,99.15,0,0,1,0,38.46l-31.84,18.1c-.65,1.15-1.32,2.29-2,3.41l-.16,36A104.58,104.58,0,0,1,162,224Z"),
+                .path("M41.43,178.09A99.14,99.14,0,0,1,31.36,153.8l16.78-21a81.59,81.59,0,0,1,0-9.64l-16.77-21a99.43,99.43,0,0,1,10.05-24.3l26.71-3a81,81,0,0,1,6.81-6.81l3-26.7A99.14,99.14,0,0,1,102.2,31.36l21,16.78a81.59,81.59,0,0,1,9.64,0l21-16.77a99.43,99.43,0,0,1,24.3,10.05l3,26.71a81,81,0,0,1,6.81,6.81l26.7,3a99.14,99.14,0,0,1,10.07,24.29l-16.78,21a81.59,81.59,0,0,1,0,9.64l16.77,21a99.43,99.43,0,0,1-10,24.3l-26.71,3a81,81,0,0,1-6.81,6.81l-3,26.7a99.14,99.14,0,0,1-24.29,10.07l-21-16.78a81.59,81.59,0,0,1-9.64,0l-21,16.77a99.43,99.43,0,0,1-24.3-10l-3-26.71a81,81,0,0,1-6.81-6.81Z"),
             ]
         case .help:
             return [
                 .circle(cx: 128, cy: 128, r: 96),
                 .path("M128,144v-8c17.67,0,32-12.54,32-28s-14.33-28-32-28S96,92.54,96,108v4"),
-                .circle(cx: 128, cy: 180, r: 11, filled: true),
+                .circle(cx: 128, cy: 180, r: 12, filled: true),
             ]
         case .search:
             return [
@@ -362,6 +410,8 @@ enum MurmurIcon {
             return [
                 .path("M92.69,216H48a8,8,0,0,1-8-8V163.31a8,8,0,0,1,2.34-5.65L165.66,34.34a8,8,0,0,1,11.31,0L221.66,79a8,8,0,0,1,0,11.31L98.34,213.66A8,8,0,0,1,92.69,216Z"),
                 .line(x1: 136, y1: 64, x2: 192, y2: 120),
+                .line(x1: 164, y1: 92, x2: 68, y2: 188),
+                .line(x1: 95.49, y1: 215.49, x2: 40.51, y2: 160.51),
             ]
         case .plus:
             return [
@@ -384,18 +434,14 @@ enum MurmurIcon {
             ]
         case .more:
             return [
-                .circle(cx: 60, cy: 128, r: 14, filled: true),
-                .circle(cx: 128, cy: 128, r: 14, filled: true),
-                .circle(cx: 196, cy: 128, r: 14, filled: true),
+                .circle(cx: 60, cy: 128, r: 12, filled: true),
+                .circle(cx: 128, cy: 128, r: 12, filled: true),
+                .circle(cx: 196, cy: 128, r: 12, filled: true),
             ]
         case .sidebar:
-            // A window frame with one vertical divider marking off a
-            // narrower left column — same canvas/corner-radius convention
-            // as .calendar above, built from primitives rather than raw
-            // path data since the shape itself is this simple.
             return [
-                .rect(x: 40, y: 40, width: 176, height: 176, rx: 8),
-                .line(x1: 100, y1: 40, x2: 100, y2: 216),
+                .rect(x: 32, y: 48, width: 192, height: 160, rx: 8),
+                .line(x1: 88, y1: 48, x2: 88, y2: 208),
             ]
         case .arrowRight:
             return [
@@ -433,12 +479,11 @@ enum MurmurIcon {
                 .path("M88,88V56a40,40,0,0,1,80,0V88"),
             ]
         case .apps:
-            // Four panes — an app grid, for per-app behavior.
             return [
-                .rect(x: 48, y: 48, width: 72, height: 72, rx: 10),
-                .rect(x: 136, y: 48, width: 72, height: 72, rx: 10),
-                .rect(x: 48, y: 136, width: 72, height: 72, rx: 10),
-                .rect(x: 136, y: 136, width: 72, height: 72, rx: 10),
+                .rect(x: 48, y: 48, width: 64, height: 64, rx: 8),
+                .rect(x: 144, y: 48, width: 64, height: 64, rx: 8),
+                .rect(x: 48, y: 144, width: 64, height: 64, rx: 8),
+                .rect(x: 144, y: 144, width: 64, height: 64, rx: 8),
             ]
         }
     }
@@ -446,27 +491,53 @@ enum MurmurIcon {
 
 // MARK: - Rendering
 
+/// Every `.path("…")` primitive re-parses its SVG path data (character by
+/// character, via `SVGPathParser`) on every call — fine for a handful of
+/// static icons, but `path(in:)` runs on every draw, and a scrolling list
+/// with several icon buttons per row calls it constantly. Each icon's
+/// combined, unscaled geometry is cached the first time it's built, in its
+/// native 256-unit space; every later draw just applies a scale transform
+/// to that cached `Path`, which is cheap, instead of re-parsing.
+private enum MurmurIconGeometryCache {
+    static var stroke: [MurmurIcon: Path] = [:]
+    static var fill: [MurmurIcon: Path] = [:]
+}
+
 private struct MurmurIconStrokeShape: Shape {
     let icon: MurmurIcon
     func path(in rect: CGRect) -> Path {
-        let scale = rect.width / 256
-        var combined = Path()
-        for element in icon.elements where !element.isFilled {
-            combined.addPath(element.path(), transform: CGAffineTransform(scaleX: scale, y: scale))
+        let base: Path
+        if let cached = MurmurIconGeometryCache.stroke[icon] {
+            base = cached
+        } else {
+            var combined = Path()
+            for element in icon.elements where !element.isFilled {
+                combined.addPath(element.path())
+            }
+            MurmurIconGeometryCache.stroke[icon] = combined
+            base = combined
         }
-        return combined
+        let scale = rect.width / 256
+        return base.applying(CGAffineTransform(scaleX: scale, y: scale))
     }
 }
 
 private struct MurmurIconFillShape: Shape {
     let icon: MurmurIcon
     func path(in rect: CGRect) -> Path {
-        let scale = rect.width / 256
-        var combined = Path()
-        for element in icon.elements where element.isFilled {
-            combined.addPath(element.path(), transform: CGAffineTransform(scaleX: scale, y: scale))
+        let base: Path
+        if let cached = MurmurIconGeometryCache.fill[icon] {
+            base = cached
+        } else {
+            var combined = Path()
+            for element in icon.elements where element.isFilled {
+                combined.addPath(element.path())
+            }
+            MurmurIconGeometryCache.fill[icon] = combined
+            base = combined
         }
-        return combined
+        let scale = rect.width / 256
+        return base.applying(CGAffineTransform(scaleX: scale, y: scale))
     }
 }
 

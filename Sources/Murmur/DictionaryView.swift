@@ -2,9 +2,21 @@ import SwiftUI
 
 // MARK: - Dictionary
 //
-// Per the design: explains the mechanism up front, is searchable, shows a
-// live count, and every row is genuinely editable/deletable — replacing
-// the old always-editable field grid.
+// Redesigned per the "Main" canvas (Dictionary.dc.html): same `GlassPanelPage`
+// shell as Home/Insights/Scratchpad/Ask, warm palette instead of the shared
+// dynamic `Palette`. Functionally unchanged from the previous pass: explains
+// the mechanism up front, is searchable, shows a live count, and every row
+// is genuinely editable/deletable.
+//
+// The tip banner, search field, add-row button, and related-link row are
+// all bespoke to this page rather than the shared `PageTip`/`SearchField`/
+// `AddRowButton`/`RelatedLink` components — those are still tuned for the
+// old dynamic/lime palette and are shared with pages that haven't been
+// redesigned yet, so forking them here (rather than editing them in place)
+// keeps this page exact without changing how they look anywhere else.
+// `EditPairRow`/`DictListRow` below aren't shared with anything else
+// (checked: nothing outside this file references them despite an older
+// comment claiming Style did too), so those are edited in place instead.
 
 struct DictionaryPage: View {
     @Binding var page: Page
@@ -16,33 +28,108 @@ struct DictionaryPage: View {
     @State private var addingNew = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "Dictionary",
-                subtitle: "Spoken phrases replaced in every transcript.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    tipBanner
+                        .padding(.top, 18)
+                    searchBar
+                        .padding(.top, 16)
+                    listCard
+                        .padding(.top, 14)
 
-            PageTip(text: "Say it roughly right — Murmur matches by sound, not exact wording, "
-                    + "and swaps in the correction anywhere it lands in a sentence.")
-                .padding(.bottom, 16)
+                    if addingNew {
+                        EditPairRow(
+                            fromPlaceholder: "Say this…",
+                            toPlaceholder: "Get this instead",
+                            from: $draftFrom, to: $draftTo,
+                            onSave: { commitNew() },
+                            onCancel: { addingNew = false })
+                            .padding(.top, 10)
+                    } else {
+                        addRowButton
+                            .padding(.top, 10)
+                    }
 
-            HStack {
-                SearchField(placeholder: "Search words and phrases…", text: $searchText)
-                Spacer()
-                Text(countLabel)
-                    .font(.manrope(11.5))
-                    .foregroundStyle(Palette.inkFaint)
+                    relatedLink
+                        .padding(.top, 14)
+                }
             }
-            .padding(.bottom, 12)
+        }
+        .onAppear(perform: load)
+    }
 
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Dictionary")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Spoken phrases replaced in every transcript.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tipBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            MurmurIconView(icon: .help)
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Palette.warmInkSoft)
+                .padding(.top, 1)
+            Text("Say it roughly right — Murmur matches by sound, not exact wording, "
+                 + "and swaps in the correction anywhere it lands in a sentence.")
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var searchBar: some View {
+        HStack {
+            HStack(spacing: 8) {
+                MurmurIconView(icon: .search)
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(Palette.warmInkFaint)
+                TextField("Search words and phrases…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.manrope(12.5))
+                    .foregroundStyle(Palette.warmInk)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmRowBorder, lineWidth: 1))
+            .frame(width: 260)
+            Spacer()
+            Text(countLabel)
+                .font(.manrope(11.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+    }
+
+    private var listCard: some View {
+        Group {
             if visibleRows.isEmpty {
                 Text(rows.isEmpty
                      ? "No words yet — add the names and jargon Murmur keeps getting wrong."
                      : "No matches.")
                     .font(.manrope(12.5))
                     .italic()
-                    .foregroundStyle(Palette.inkFaint)
+                    .foregroundStyle(Palette.warmInkFaint)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(visibleRows.enumerated()), id: \.element.id) { index, row in
@@ -67,38 +154,58 @@ struct DictionaryPage: View {
                                 })
                         }
                         if index != visibleRows.count - 1 {
-                            Rectangle().fill(Palette.border).frame(height: 1)
+                            Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
                         }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             }
-
-            if addingNew {
-                EditPairRow(
-                    fromPlaceholder: "Say this…",
-                    toPlaceholder: "Get this instead",
-                    from: $draftFrom, to: $draftTo,
-                    onSave: { commitNew() },
-                    onCancel: { addingNew = false })
-                    .padding(.top, 6)
-            } else {
-                AddRowButton(title: "Add word or phrase") {
-                    draftFrom = ""
-                    draftTo = ""
-                    addingNew = true
-                }
-                .padding(.top, 8)
-            }
-
-            RelatedLink(
-                prefix: "Mishearing your accent or a name, not a specific word?",
-                linkTitle: "Voice Profile",
-                suffix: learnedCorrectionsCount > 0
-                    ? "learns those automatically — \(learnedCorrectionsCount) so far."
-                    : "learns those automatically."
-            ) { page = .training }
         }
-        .onAppear(perform: load)
+    }
+
+    private var addRowButton: some View {
+        Button {
+            draftFrom = ""
+            draftTo = ""
+            addingNew = true
+        } label: {
+            HStack(spacing: 8) {
+                MurmurIconView(icon: .plus).frame(width: 13, height: 13)
+                Text("Add word or phrase").font(.manrope(12.5, .semibold))
+            }
+            .foregroundStyle(Palette.warmInkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .foregroundStyle(Palette.warmDivider))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleButtonStyle(scale: 0.98))
+    }
+
+    private var relatedLink: some View {
+        HStack(spacing: 4) {
+            Text("Mishearing your accent or a name, not a specific word?")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+            Button { page = .training } label: {
+                Text("Voice Profile")
+                    .font(.manrope(12, .medium))
+                    .foregroundStyle(Palette.sunsetDeep)
+            }
+            .buttonStyle(.plain)
+            Text(learnedCorrectionsCount > 0
+                 ? "learns those automatically — \(learnedCorrectionsCount) so far."
+                 : "learns those automatically.")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var learnedCorrectionsCount: Int {
@@ -176,13 +283,13 @@ struct DictListRow: View {
         HStack(spacing: 16) {
             Text(from)
                 .font(.manrope(13))
-                .foregroundStyle(Palette.inkSoft)
+                .foregroundStyle(Palette.warmInkSoft)
                 .frame(width: 140, alignment: .leading)
             HStack(spacing: 6) {
-                Text("→").foregroundStyle(Palette.inkFaint)
+                Text("→").foregroundStyle(Palette.warmInkFaint)
                 Text(to)
                     .font(.manrope(13, .medium))
-                    .foregroundStyle(Palette.ink)
+                    .foregroundStyle(Palette.warmInk)
             }
             .font(.manrope(13))
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -197,7 +304,7 @@ struct DictListRow: View {
         .padding(.vertical, 15)
         .background(
             RoundedRectangle(cornerRadius: Radius.sm)
-                .fill(hovering ? Palette.cardHover : Color.clear))
+                .fill(hovering ? Palette.warmRowBorder : Color.clear))
         // See HomeView.swift's historyRow for why this is needed: a .clear
         // background makes SwiftUI treat the row's empty space as outside
         // the hoverable region until this forces the whole padded frame to
@@ -207,7 +314,7 @@ struct DictListRow: View {
     }
 }
 
-/// The inline add/edit form used by Dictionary and Style.
+/// The inline add/edit form used by Dictionary.
 struct EditPairRow: View {
     let fromPlaceholder: String
     let toPlaceholder: String
@@ -221,20 +328,22 @@ struct EditPairRow: View {
             TextField(fromPlaceholder, text: $from)
                 .textFieldStyle(.plain)
                 .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInk)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                .background(Palette.warmRowBorder, in: RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmDivider, lineWidth: 1))
                 .frame(width: 140)
                 .onSubmit(onSave)
-            Text("→").foregroundStyle(Palette.inkFaint)
+            Text("→").foregroundStyle(Palette.warmInkFaint)
             TextField(toPlaceholder, text: $to)
                 .textFieldStyle(.plain)
                 .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInk)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                .background(Palette.warmRowBorder, in: RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmDivider, lineWidth: 1))
                 .onSubmit(onSave)
             IconButton(icon: .check, help: "Save", action: onSave)
             IconButton(icon: .plus, rotated: true, help: "Cancel", action: onCancel)

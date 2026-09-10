@@ -24,8 +24,53 @@ final class ParakeetEngine {
 
     static let availableModels: [(id: String, label: String)] = [
         ("v2", "Parakeet v2 — English, highest recall, ~600 MB"),
-        ("v3", "Parakeet v3 — multilingual (25 languages), ~600 MB"),
+        ("v3", "Parakeet v3 — multilingual (\(v3LanguageCodes.count) languages), ~600 MB"),
     ]
+
+    /// BCP-47 language codes each model can actually transcribe: `v2` is
+    /// English-only; `v3` is NVIDIA's documented 25-language European set,
+    /// narrowed to the ones FluidAudio's own FLEURS benchmark measured
+    /// under `v3WEROfferThreshold` word error rate — see
+    /// `v3WordErrorRates`. Drives the Settings/HUD language pickers, which
+    /// otherwise have no way to know these two models don't cover the same
+    /// languages — or that "supported" and "actually accurate" aren't the
+    /// same thing for several of the 25.
+    static func supportedLanguageCodes(for model: String) -> [String] {
+        model == "v2" ? ["en"] : v3LanguageCodes
+    }
+
+    /// Parakeet TDT v3's per-language word error rate, as measured by
+    /// FluidAudio's own FLEURS benchmark (`fluidaudiocli fleurs-benchmark`,
+    /// see FluidAudioCLI's `FleursBenchmark.swift`) against NVIDIA's
+    /// documented 25-language set. Portuguese is absent from NVIDIA's set
+    /// entirely here, not just filtered out below — that benchmark file
+    /// only measured `pt_br` (Brazilian) as a separate, non-European
+    /// addition alongside Arabic/Japanese/Mandarin/Korean/Vietnamese, with
+    /// no comparable WER logged for it, so there's nothing here to vouch
+    /// for either way.
+    private static let v3WordErrorRates: [String: Double] = [
+        "it": 3.00, "es": 3.45, "de": 5.04, "en": 4.85, "fr": 5.15,
+        "ru": 5.51, "uk": 6.79, "pl": 7.31, "nl": 7.48, "sk": 8.82,
+        "cs": 11.01, "ro": 12.44, "hr": 12.46, "bg": 12.64, "fi": 13.21,
+        "sv": 15.08, "hu": 15.72, "et": 17.73, "da": 18.41, "mt": 20.46,
+        "lt": 20.35, "el": 20.70, "lv": 22.84, "sl": 24.03,
+    ]
+
+    /// Above this measured word error rate, Murmur doesn't offer the
+    /// language at all — wrong roughly one word in ten (or worse) isn't
+    /// the fast, accurate dictation the app promises, and silently
+    /// offering it as an equal alongside English/German/French/etc. sets
+    /// an expectation the model can't meet. Chosen, not measured: there's
+    /// no natural cutoff in the data (see the jump from Slovak's 8.82% to
+    /// Czech's 11.01%), so this is a deliberate quality bar, not a
+    /// statistical one — revisit if a Parakeet update changes the numbers.
+    private static let v3WEROfferThreshold = 10.0
+
+    private static let v3LanguageCodes: [String] =
+        v3WordErrorRates
+            .filter { $0.value < v3WEROfferThreshold }
+            .keys
+            .sorted()
 
     /// Status line for the UI (loading/downloading/transcribing); nil clears.
     var onStatus: ((String?) -> Void)?

@@ -1,5 +1,50 @@
 import SwiftUI
 
+// MARK: - Glass panel page (the "Main" redesign's shared page chrome)
+
+/// The frosted glass panel every full-bleed "Main"-redesign page (Home,
+/// Insights, …) floats on top of `AppShellRoot.appBody`'s shared gradient
+/// backdrop — factored out once both pages needed the identical
+/// padding/material/shadow stack, rather than copy-pasting it per page.
+///
+/// A page using this opts out of `AppShellRoot`'s generic pane padding (see
+/// the `page == .home` — extend that check for any new page adopting this)
+/// so this can paint edge-to-edge and float on the *shared* gradient
+/// instead of a second, independently-scaled copy of its own (the seam
+/// that produced, before `homeGradient` moved to `appBody`).
+///
+/// Margin was trimmed back from Main.dc.html's own 34/38 to 18/20 by
+/// request — the panel reads as "floating" just as well with a narrower
+/// gradient border, and the narrower margin buys real content (Home's
+/// history list, Insights' chart) more room. Every page adopting this
+/// shell should match, not re-introduce the mockup's wider margin.
+///
+/// Pinned to `.light` colorScheme — none of these pages have a dark
+/// variant in the mockup yet, so this pins `content`'s subtree rather than
+/// half-adapting with nothing to adapt to. Applied here, not by each page
+/// itself, so every adopter gets it automatically and consistently; a page
+/// with its own `.sheet`/`.popover` should attach those outside this view
+/// (on the call site), not inside `content`, so presented content keeps
+/// following the system appearance normally.
+struct GlassPanelPage<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(26)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.6), lineWidth: 1))
+            .shadow(color: .black.opacity(0.03), radius: 1, y: 1)
+            .shadow(color: .black.opacity(0.05), radius: 30, y: 20)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .environment(\.colorScheme, .light)
+    }
+}
+
 // MARK: - Page header
 
 /// `<h3>` + `.pane-sub` — every page in the mockup opens with these two.
@@ -703,11 +748,22 @@ struct ThinScrollView<Content: View>: View {
 /// into the hierarchy and turns its scrollers off directly at the AppKit
 /// level, bypassing whatever SwiftUI-level quirk leaves `.scrollIndicators`
 /// unrespected.
+///
+/// `scrollerStyle` is forced to `.overlay` *before* disabling the scrollers:
+/// under System Settings' "Show scroll bars: Always", `NSScrollView`
+/// defaults to `.legacy` style, which reserves a fixed gutter for the
+/// vertical scroller's width even once `hasVerticalScroller` is set to
+/// false — this showed up as page content sitting a consistent ~15pt
+/// short of the glass panel's right edge on a system with that setting.
+/// Overlay-style scrollers float over content instead of reserving layout
+/// space, so this closes the gap regardless of the user's system
+/// preference or of any timing race with the async disable below.
 private struct ScrollbarHider: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         DispatchQueue.main.async {
             guard let scrollView = view.enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
             scrollView.hasVerticalScroller = false
             scrollView.hasHorizontalScroller = false
         }
@@ -761,26 +817,33 @@ struct MurmurTooltip: ViewModifier {
         content
             .background(
                 GeometryReader { geo in
+                    // Reads the control's current global frame only at the
+                    // moment hover starts, rather than continuously tracking
+                    // it via `.onChange` — that used to fire on every scroll
+                    // frame for every icon on screen (each one's global Y
+                    // shifts as its row scrolls), turning a list of hidden,
+                    // rarely-shown tooltips into a steady stream of @State
+                    // writes and made scrolling visibly laggy. A tooltip
+                    // only needs to know where it is right before it opens
+                    // (already gated 320ms behind `revealTask` below), not
+                    // on every frame in between.
                     Color.clear
-                        .onAppear { controlFrame = geo.frame(in: .global) }
-                        .onChange(of: geo.frame(in: .global)) { _, new in
-                            controlFrame = new
+                        .onHover { inside in
+                            hovering = inside
+                            revealTask?.cancel()
+                            if inside {
+                                controlFrame = geo.frame(in: .global)
+                                revealTask = Task {
+                                    try? await Task.sleep(nanoseconds: 320_000_000)
+                                    if !Task.isCancelled, hovering {
+                                        withAnimation(.murmurEase(0.12)) { visible = true }
+                                    }
+                                }
+                            } else {
+                                visible = false
+                            }
                         }
                 })
-            .onHover { inside in
-                hovering = inside
-                revealTask?.cancel()
-                if inside {
-                    revealTask = Task {
-                        try? await Task.sleep(nanoseconds: 320_000_000)
-                        if !Task.isCancelled, hovering {
-                            withAnimation(.murmurEase(0.12)) { visible = true }
-                        }
-                    }
-                } else {
-                    visible = false
-                }
-            }
             .overlay(alignment: resolvedEdge == .top ? .top : .bottom) {
                 if visible, !text.isEmpty {
                     Text(text)

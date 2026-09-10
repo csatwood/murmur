@@ -19,6 +19,24 @@ final class WhisperEngine {
         ("large-v3-v20240930_turbo", "Large v3 Turbo — most precise, slow, ~1.6 GB"),
     ]
 
+    /// True for model variants that drop Whisper's multilingual capacity
+    /// for speed — Distil-Whisper's large-v3 distillation is English-only,
+    /// so offering another language for it in the Settings/HUD pickers
+    /// would just set up a silent mistranscription.
+    static func isEnglishOnly(_ model: String) -> Bool {
+        model == "distil-whisper_distil-large-v3_turbo"
+    }
+
+    /// The Whisper family's full trained-language set, as ISO 639-1 codes.
+    /// Shared with `WhisperCppEngine`, which runs the same underlying
+    /// models through a different backend — sourced from WhisperKit's own
+    /// token table (`Constants.languages` maps display name to code, with
+    /// a few name aliases pointing at the same code) rather than hand-kept
+    /// in sync with it.
+    static var supportedLanguageCodes: [String] {
+        Array(Set(Constants.languages.values))
+    }
+
     /// Status line for the UI (loading/downloading/transcribing); nil clears.
     var onStatus: ((String?) -> Void)?
 

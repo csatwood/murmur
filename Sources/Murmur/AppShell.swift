@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 // MARK: - Page grouping
@@ -44,7 +43,12 @@ extension Page {
 
     /// True for pages that fill the pane and scroll internally, rather
     /// than being a document inside the shell's own ScrollView.
-    var managesOwnScrolling: Bool { self == .ask || self == .home || self == .insights }
+    var managesOwnScrolling: Bool {
+        self == .ask || self == .home || self == .insights || self == .scratchpad
+            || self == .dictionary || self == .training || self == .style
+            || self == .appProfiles || self == .snippets || self == .templates
+            || self == .transforms || self == .settings || self == .help || self == .legal
+    }
 
     var murmurIcon: MurmurIcon {
         switch self {
@@ -89,7 +93,11 @@ struct RailView: View {
     var onGroupCollapsedWithActivePage: (PageGroup) -> Void = { _ in }
 
     static let collapsedWidth: CGFloat = 72
-    static let expandedWidth: CGFloat = 236
+    // Main.dc.html's nav column is a fixed `width: 192px` — this predates
+    // the "Main" redesign (was 236, from the old design system) and was
+    // missed when everything else in the rail was re-measured against the
+    // mockup, leaving the expanded rail visibly wider than intended.
+    static let expandedWidth: CGFloat = 192
 
     private var expanded: Bool { pinned || peeking }
 
@@ -116,7 +124,10 @@ struct RailView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Palette.rail)
+        // Unboxed per the "Main" redesign: transparent, not its own fill —
+        // `appBody` paints one `homeGradient` behind the rail *and* the
+        // pane together, so the rail reads as sitting directly on the same
+        // continuous backdrop rather than a separately-colored strip.
     }
 
     // MARK: Top
@@ -124,24 +135,22 @@ struct RailView: View {
     private var top: some View {
         HStack(spacing: 9) {
             HStack(spacing: 10) {
-                // The real app icon (Resources/Murmur.icns, via the running
-                // app's own icon rather than a duplicated asset) — its dark
-                // squircle and waveform mark are already baked into the
-                // image, so no background fill or tinting is layered on top.
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 46, height: 46)
+                // The mascot (the running app's own `.icns`) is retired in
+                // this redesign in favor of Main.dc.html's own mark — a
+                // plain sunset-orange badge with an abstract 5-bar waveform,
+                // no character/face. `Resources/Murmur.icns` itself (the
+                // Dock/Finder icon) is a separate asset this doesn't touch.
+                MurmurLogoBadge()
                 if expanded {
                     Text("Murmur")
-                        .font(.manrope(18, .semibold))
-                        .foregroundStyle(Palette.railItem)
+                        .font(.manrope(20, .semibold))
+                        .foregroundStyle(Palette.warmInk)
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.bottom, 18)
+        .padding(.bottom, 22)
     }
 
     // MARK: Rows
@@ -202,7 +211,7 @@ struct RailView: View {
                         MurmurIconView(icon: group.icon).frame(width: 17, height: 17)
                         Spacer(minLength: 0)
                     }
-                    .foregroundStyle(Palette.railItem)
+                    .foregroundStyle(Palette.warmInk)
                     .padding(.horizontal, 9)
                     .frame(height: 34)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -212,6 +221,33 @@ struct RailView: View {
             }
         }
         .padding(.top, expanded ? 8 : 0)
+    }
+}
+
+/// Main.dc.html's logo mark: a sunset-orange, 10pt-radius, 34×34 badge
+/// holding a plain 5-bar waveform glyph — five simple rects, not worth
+/// routing through the `MurmurIcon`/SVG-path system built for the app's
+/// outline icon set. Bar heights (6/12/18/12/6) and the orange fill are
+/// copied directly from the mockup's own `<svg>`, scaled down from its
+/// 24-unit viewBox to the 15pt it's actually rendered at there — the icon
+/// sits smaller than the badge with visible padding around it, not
+/// stretched edge-to-edge.
+private struct MurmurLogoBadge: View {
+    private static let barHeights: [CGFloat] = [6, 12, 18, 12, 6]
+    private static let scale: CGFloat = 15.0 / 24.0
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 2 * Self.scale) {
+            ForEach(Array(Self.barHeights.enumerated()), id: \.offset) { _, height in
+                Rectangle()
+                    .fill(.white)
+                    .frame(width: 3 * Self.scale, height: height * Self.scale)
+            }
+        }
+        .frame(width: 34, height: 34)
+        .background(Palette.sunset, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 1, y: 1)
+        .shadow(color: .black.opacity(0.08), radius: 9, y: 8)
     }
 }
 
@@ -238,6 +274,7 @@ struct AppShellRoot: View {
     @State private var paneSwapping = false
     /// When set, the pane shows a group overview rather than a page.
     @State private var overviewGroup: PageGroup?
+    @State private var showingNotifications = false
 
     private let permissionTimer = Timer.publish(
         every: 2, on: .main, in: .common).autoconnect()
@@ -275,6 +312,13 @@ struct AppShellRoot: View {
             expandedGroups.insert(newValue.group)
             app.pendingNavigateToPage = nil
         }
+        // `.sheet(item:)` clears `app.availableUpdate` back to nil on its
+        // own however the sheet closes (a button's own `dismiss()`,
+        // Escape, clicking outside) — none of the three actions need to
+        // touch it themselves.
+        .sheet(item: $app.availableUpdate) { update in
+            SoftwareUpdateSheet(update: update)
+        }
     }
 
     /// `.titlebar` — 44px tall, shell-colored, hairline bottom border,
@@ -306,11 +350,141 @@ struct AppShellRoot: View {
                     .lineLimit(2)
                     .frame(maxWidth: 420, alignment: .trailing)
             }
-            IconButton(icon: .bell, help: "Help") { select(.help) }
+            // Used to navigate straight to Help — the tooltip even still
+            // said "Help" — instead of showing anything notification-
+            // shaped. Now backed by `NotificationLog`, the same record
+            // the App Profile suggestion and update-available checks
+            // already write to regardless of whether the user granted
+            // system notification permission.
+            IconButton(icon: .bell, help: "Notifications") { showingNotifications = true }
+                .popover(isPresented: $showingNotifications, arrowEdge: .bottom) {
+                    NotificationsPopover { entry in
+                        showingNotifications = false
+                        switch entry.kind {
+                        case .appProfileSuggestion:
+                            app.pendingNavigateToPage = .appProfiles
+                        case .updateAvailable:
+                            break // Re-shows itself via the existing sheet binding if still set.
+                        }
+                    }
+                }
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
-        .background(Palette.shell)
+        // Fixed, a shade darker than `homeGradient`'s own leading stop —
+        // not `Palette.shell`'s neutral gray, which read as a disconnected
+        // bar sitting on top of the sage-tinted body instead of a related
+        // surface; matching the gradient's stop exactly, in turn, read as
+        // *too* related — no visible seam between the titlebar and the
+        // body at all.
+        .background(Palette.homeTitlebar)
+    }
+
+    /// The bell's own content — a short, real history rather than a
+    /// generic empty bell. No mockup artboard covers this specifically
+    /// (the design canvas has no "Notifications" page), so this borrows
+    /// this redesign's own established row/divider/empty-state
+    /// conventions rather than inventing a new visual language for one
+    /// small popover.
+    private struct NotificationsPopover: View {
+        let onSelect: (LoggedNotification) -> Void
+        @State private var entries: [LoggedNotification] = NotificationLog.load()
+        @State private var hoveredID: UUID?
+        /// The rows' own real, unconstrained height, measured directly
+        /// off `rows` below (see `PopoverContentHeightKey`) rather than
+        /// guessed from a per-row estimate — a flat "~1 line of message"
+        /// guess read as cramped the moment a message actually wrapped
+        /// to 2-3 lines.
+        @State private var measuredHeight: CGFloat = 0
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("NOTIFICATIONS")
+                    .font(.manrope(10.5, .semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Palette.warmInkFaint)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+
+                if entries.isEmpty {
+                    Text("Nothing yet — Murmur will let you know about things "
+                         + "like an app profile suggestion or a new version.")
+                        .font(.manrope(12))
+                        .foregroundStyle(Palette.warmInkFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 14)
+                        .frame(width: 260, alignment: .leading)
+                } else {
+                    ThinScrollView {
+                        // A `ScrollView`'s content always lays out at its
+                        // own natural height regardless of the viewport
+                        // constrained below — otherwise there'd be
+                        // nothing to scroll — so measuring the visible
+                        // copy directly (no hidden duplicate needed)
+                        // still reports the content's true, unclamped
+                        // height, not the capped one.
+                        rows
+                            .background(GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: PopoverContentHeightKey.self,
+                                    value: proxy.size.height)
+                            })
+                    }
+                    // Fixed, not `maxHeight` — a popover sizes to its
+                    // content just like a content-sized sheet does, so
+                    // `ThinScrollView`'s inner `GeometryReader` never gets
+                    // a definite height to resolve a flexible max against
+                    // and collapses to nothing (see
+                    // SoftwareUpdateView.swift's own note on the same
+                    // bug). `measuredHeight` is the real content height,
+                    // so a short list isn't stretched and a long one
+                    // still caps and scrolls.
+                    .frame(width: 300)
+                    .frame(height: min(measuredHeight, 320))
+                    .onPreferenceChange(PopoverContentHeightKey.self) { measuredHeight = $0 }
+                }
+            }
+            .background(Color.white)
+            .environment(\.colorScheme, .light)
+        }
+
+        private var rows: some View {
+            VStack(spacing: 0) {
+                ForEach(entries) { entry in
+                    Button { onSelect(entry) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(entry.title)
+                                .font(.manrope(12.5, .semibold))
+                                .foregroundStyle(Palette.warmInk)
+                            Text(entry.message)
+                                .font(.manrope(11.5))
+                                .foregroundStyle(Palette.warmInkSoft)
+                                .lineSpacing(2)
+                                .lineLimit(3)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(hoveredID == entry.id ? Palette.warmRowBorder : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { inside in hoveredID = inside ? entry.id : nil }
+                    if entry.id != entries.last?.id {
+                        Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+                            .padding(.horizontal, 8)
+                    }
+                }
+            }
+        }
+    }
+
+    private struct PopoverContentHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
     }
 
     private var appBody: some View {
@@ -321,6 +495,15 @@ struct AppShellRoot: View {
                 .frame(width: pinned ? RailView.expandedWidth : RailView.collapsedWidth)
             pane
         }
+        // One gradient instance spanning the rail *and* the pane, not two
+        // separately-scaled copies (rail used to paint its own). A
+        // `LinearGradient`'s start/end points are resolved as fractions of
+        // whatever view draws it — painted once here and left transparent
+        // in the rail, the sage-to-cream backdrop is continuous behind
+        // both; painted twice, the same gradient stretches over two
+        // different-width boxes and comes out at two different angles,
+        // showing up as a visible seam right at the rail's edge.
+        .background(Palette.homeGradient)
         .overlay(alignment: .topLeading) {
             RailView(
                 app: app, page: pageBinding, pinned: $pinned, peeking: $peeking,
@@ -347,14 +530,30 @@ struct AppShellRoot: View {
     }
 
     /// `.pane` — 32px top / 36px sides / 40px bottom, with the swap
-    /// transition applied on every page change.
+    /// transition applied on every page change. Pages on the "Main"
+    /// redesign's `GlassPanelPage` shell are the exception: their own
+    /// canvas paints edge-to-edge (the sage-to-cream backdrop behind the
+    /// glass panel), so they supply their own matching padding internally
+    /// instead of taking the generic inset here. Extend this list as more
+    /// pages adopt `GlassPanelPage`.
+    private static let glassPanelPages: Set<Page> = [
+        .home, .insights, .scratchpad, .ask, .dictionary, .training, .style,
+        .appProfiles, .snippets, .templates, .transforms, .settings, .help, .legal,
+    ]
+
     private var pane: some View {
         Group {
             if page.managesOwnScrolling {
-                pageContent
-                    .padding(.horizontal, 36)
-                    .padding(.top, 32)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                Group {
+                    if Self.glassPanelPages.contains(page) {
+                        pageContent
+                    } else {
+                        pageContent
+                            .padding(.horizontal, 36)
+                            .padding(.top, 32)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 ScrollView {
                     pageContent
@@ -438,7 +637,7 @@ private struct RailRow: View {
                     // sizing the icon up here is what thickens its stroke
                     // too, in the same move, rather than a separate lever.
                     MurmurIconView(icon: item.murmurIcon)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 16, height: 16)
                     if needsPermissions {
                         Circle()
                             .fill(Palette.danger)
@@ -448,7 +647,7 @@ private struct RailRow: View {
                 }
                 if expanded {
                     Text(item.label)
-                        .font(.manrope(14.5, selected ? .bold : .medium))
+                        .font(.manrope(15, .medium))
                         .lineLimit(1)
                     if needsPermissions {
                         Text("\(missingCount)")
@@ -460,15 +659,14 @@ private struct RailRow: View {
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(selected ? Palette.accent
-                             : (hovering ? .white : Palette.railItem))
-            .padding(.horizontal, 9)
+            .foregroundStyle(selected ? .white : Palette.warmInk)
+            .padding(.horizontal, 10)
             .frame(height: 34)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: Radius.sm)
-                    .fill(selected ? Palette.railActive
-                          : (hovering ? Color.white.opacity(0.07) : .clear)))
+                    .fill(selected ? Palette.navActivePill
+                          : (hovering ? Color.black.opacity(0.045) : .clear)))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressScaleButtonStyle(scale: 0.97))
@@ -563,16 +761,14 @@ private struct GroupLabelButton: View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Text(title.uppercased())
-                    .font(.manrope(10.5, .medium))
-                    .tracking(0.84)
+                    .font(.manrope(10.5, .bold))
+                    .tracking(1.05)
                 Spacer(minLength: 0)
                 MurmurIconView(icon: .caret)
                     .frame(width: 9, height: 9)
                     .rotationEffect(.degrees(isOpen ? 90 : 0))
             }
-            .foregroundStyle(
-                Color(red: 247/255, green: 245/255, blue: 239/255)
-                    .opacity(hovering ? 0.8 : 0.48))
+            .foregroundStyle(Palette.warmInkFaint.opacity(hovering ? 1 : 0.75))
             .padding(.leading, 10)
             .padding(.trailing, 8)
             .frame(height: 22)
@@ -580,7 +776,7 @@ private struct GroupLabelButton: View {
             .padding(.vertical, 5)
             .background(
                 RoundedRectangle(cornerRadius: Radius.sm)
-                    .fill(hovering ? Color.white.opacity(0.05) : .clear))
+                    .fill(hovering ? Color.black.opacity(0.04) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressScaleButtonStyle(scale: 0.98))

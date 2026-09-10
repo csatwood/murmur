@@ -151,37 +151,81 @@ enum Palette {
     /// same-hue step instead of inventing a third green.
     static let toggleOn = chartMark
 
-    // Rail — always dark, in both light and dark app appearance (matches
-    // the mockup: the nav rail never changes with system theme).
-    static let rail = Color(red: 0.090, green: 0.094, blue: 0.110)
-
-    /// Home's capture zone: a deliberately dark "hero" card in light mode
-    /// (same fixed near-black as `rail`, for brand consistency — this part
-    /// isn't changing), but NOT pinned to that exact value in dark mode
-    /// too. A shadow is how *light* mode communicates elevation, and it
-    /// stops working the moment the page around it is already near-black —
-    /// there's no room to read as "darker than its surroundings" when nothing
-    /// nearby is lighter to begin with. Dark-mode UI elevates surfaces by
-    /// making them *lighter*, the same lightness-step idea `card`/`cardHover`
-    /// already use one step up from `panel`/`shell` — this is that same
-    /// step, scoped to this one surface (roughly a 10% white overlay over
-    /// `rail`'s own value) rather than borrowing `card`'s separately-scoped
-    /// warm tone. Confirmed against Material Design's dark theme guidance:
-    /// elevated dark surfaces use overlay tints, not shadows.
-    static let heroSurface = dynamic(
-        NSColor(red: 0.090, green: 0.094, blue: 0.110, alpha: 1),
-        NSColor(red: 0.181, green: 0.185, blue: 0.199, alpha: 1))
-    static let railItem = Color(red: 0.773, green: 0.769, blue: 0.780)
-    static let railActive = Color(red: 0.271, green: 0.275, blue: 0.282)
-
-    static let banner = Color(red: 0.090, green: 0.094, blue: 0.110)
-    /// The banner is a subtle two-stop gradient, not a flat fill.
-    static let banner2 = Color(red: 0.157, green: 0.149, blue: 0.133)
-
     /// Alias kept for pages not yet ported to the new design — the mockup
     /// uses the plain card surface for callouts (`.page-tip`, availability
     /// banners) rather than a separate tinted color.
     static let tint = card
+
+    // MARK: - Home redesign (Sep 2026 "Main" canvas)
+    //
+    // Fixed colors sampled directly from Main.dc.html, not `dynamic(...)`
+    // pairs — that mockup has no dark-mode variant, same situation
+    // `heroSurface`/`rail` were already in. `HomePage` pins its own
+    // subtree to `.light` colorScheme (see HomeView.swift) so these read
+    // correctly and consistently regardless of the system appearance,
+    // rather than half-adapting with no actual dark values to adapt to.
+
+    /// The app-body backdrop behind the floating rail and Home's glass
+    /// panel: a soft sage-to-cream diagonal, `linear-gradient(160deg,
+    /// #DCE8E0 0%, #F7F5F0 55%)`.
+    static let homeGradientTop = Color(red: 0.863, green: 0.910, blue: 0.878)
+    static let homeGradientBottom = Color(red: 0.969, green: 0.961, blue: 0.941)
+    static let homeGradient = LinearGradient(
+        colors: [homeGradientTop, homeGradientBottom],
+        startPoint: UnitPoint(x: 0.33, y: 0.03),
+        endPoint: UnitPoint(x: 0.67, y: 0.97))
+    /// The titlebar's own fill — `homeGradientTop` darkened about 10%, by
+    /// request: matching the gradient's own leading stop exactly (the
+    /// original choice) made the custom titlebar chrome read as one
+    /// continuous surface with the body below it, but *too* continuous —
+    /// there was no seam at all between the titlebar strip and the rest of
+    /// the frame. A shade darker keeps them visibly related (same hue,
+    /// not a different color) while still reading as two distinct bands.
+    static let homeTitlebar = Color(red: 0.777, green: 0.819, blue: 0.790)
+
+    /// Capture card gradient — `linear-gradient(180deg, #EA6539 0%,
+    /// #F0B3A1 55%)` — plus the three in-between tones the hero
+    /// waveform's peak bars borrow from the same family.
+    static let sunset = Color(red: 0.918, green: 0.396, blue: 0.224)
+    static let sunsetMid = Color(red: 0.941, green: 0.651, blue: 0.486)
+    static let sunsetPale = Color(red: 0.965, green: 0.851, blue: 0.737)
+    static let sunsetLight = Color(red: 0.941, green: 0.702, blue: 0.631)
+    static let homeHeroGradient = LinearGradient(
+        colors: [sunset, sunsetLight], startPoint: .top, endPoint: .bottom)
+    /// `.stat-strip`'s link and a history row's newest timestamp — the
+    /// deeper, more legible orange used for small text rather than fills.
+    static let sunsetDeep = Color(red: 0.761, green: 0.271, blue: 0.122)
+    /// Ask Murmur's assistant-avatar circle (`#FBE9E0`) — a pale peach
+    /// tint, distinct from `sunsetPale` (a mid-waveform-bar tone, not
+    /// meant as a fill on its own).
+    static let sunsetSoft = Color(red: 0.984, green: 0.914, blue: 0.878)
+
+    /// Warm neutral ink scale for text on the new light surfaces (hero
+    /// headline, stat strip, history rows) — a warmer-toned sibling of
+    /// `ink`/`inkSoft`/`inkFaint`, not a replacement for them.
+    static let warmInk = Color(red: 0.110, green: 0.110, blue: 0.106)
+    static let warmInkSoft = Color(red: 0.471, green: 0.455, blue: 0.424)
+    static let warmInkFaint = Color(red: 0.608, green: 0.592, blue: 0.561)
+    /// A step fainter still — Insights' chart axis labels (`#B0ACA3`).
+    static let warmInkFainter = Color(red: 0.690, green: 0.675, blue: 0.639)
+
+    static let warmDivider = Color(red: 0.855, green: 0.839, blue: 0.800)
+    /// Opaque near-white fill for small chips sitting directly on the
+    /// glass panel (the search field, the empty-state placeholder) — kept
+    /// solid rather than translucent so they still read as distinct
+    /// surfaces regardless of what's blurred behind them.
+    static let warmRowBorder = Color(red: 0.941, green: 0.933, blue: 0.906)
+    /// History-row hairlines now that they sit directly on the frosted
+    /// glass panel instead of a solid white card: `warmDivider`'s fixed
+    /// near-white tone nearly vanished against the gradient-tinted
+    /// material, so this is translucent black instead — it keeps working
+    /// no matter what's blurred behind it.
+    static let glassDivider = Color.black.opacity(0.08)
+
+    /// The sidebar's active-row pill, `#161615` — fixed rather than
+    /// `railActive`'s dynamic value, since the rail itself now sits
+    /// directly on `homeGradient` instead of the always-dark `rail` fill.
+    static let navActivePill = Color(red: 0.086, green: 0.086, blue: 0.082)
 }
 
 // MARK: - Radii & motion

@@ -138,9 +138,9 @@ private struct StatusHUDView: View {
     var body: some View {
         HStack(spacing: 7) {
             if model.state.isRecording {
-                MiniWaveform(color: Palette.accent)
+                MiniWaveform(color: Palette.sunset)
             } else {
-                ProcessingDots(color: Palette.accent)
+                ProcessingDots(color: Palette.sunset)
             }
             Text(model.state.label)
                 .font(.manrope(11, .medium))
@@ -152,13 +152,13 @@ private struct StatusHUDView: View {
         // without it reading as broken; the previous size and shadow
         // here were tuned for standing alone on a bare desktop, which is
         // the uncommon case; a floating HUD spends nearly all its time
-        // over some app's own UI, not over one. No shadow at all, by
-        // request — even the softened one still read as a box under the
-        // pill rather than the pill just floating.
-        .padding(.horizontal, 11)
+        // over some app's own UI, not over one. Main.dc.html's HUD artboard
+        // puts a soft shadow back under this pill — tried, and reverted
+        // again by request: it still reads as a box under the pill rather
+        // than the pill just floating, the same call this made previously.
+        .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(
-            Capsule().fill(Color(nsColor: NSColor(white: 0.08, alpha: 0.92))))
+        .background(Capsule().fill(Palette.navActivePill))
         .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -169,11 +169,10 @@ private struct StatusHUDView: View {
 /// uses for the same "actively listening" moment, in place of the single
 /// pulsing dot this used before — more legible at this pill's now-smaller
 /// size, and it's what the most widely used app in this category already
-/// trained users to recognize. Brand lime rather than the red "recording"
-/// conventionally uses elsewhere — by request, for consistency with the
-/// rest of the app rather than the OS-level recording convention; matched
-/// in Home's capture zone (`CaptureWaveform`, `HomeView.swift`) so the
-/// two surfaces agree.
+/// trained users to recognize. Sunset orange rather than the red
+/// "recording" conventionally uses elsewhere, matching the "Main" redesign's
+/// own accent (Home's hero, the sidebar's active pill) rather than the
+/// OS-level recording convention.
 private struct MiniWaveform: View {
     let color: Color
     @State private var tall = false

@@ -3,10 +3,14 @@ import SwiftUI
 
 // MARK: - App Profiles
 //
-// One page answering one question: "what happens when I dictate into this
+// Redesigned per the "Main" canvas (AppProfiles.dc.html): same
+// `GlassPanelPage` shell as the other redesigned pages, warm palette
+// instead of the shared dynamic `Palette`. Functionally unchanged — one
+// page answering one question: "what happens when I dictate into this
 // app?" Style and Templates each used to own half the answer on separate
 // pages, with an undocumented rule that the template half silently won.
-// Both halves now live on one row, and the row spells out the result.
+// Both halves still live on one row here, and the row still spells out
+// the result.
 
 struct AppProfilesPage: View {
     @ObservedObject var app: AppDelegate
@@ -20,63 +24,111 @@ struct AppProfilesPage: View {
     /// `NSWorkspace.runningApplications` scans every process, and the add
     /// row reads the list three times per render.
     @State private var runningApps: [(bundleID: String, name: String)] = []
+    /// Lifted out of `ProfileRow` (rather than a local `@State` there) so a
+    /// hovering row can also suppress the hairline divider on *both* of its
+    /// sides — see `profileList`'s own note on why.
+    @State private var hoveredBundleID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "App Profiles",
-                subtitle: "What Murmur does when you dictate into a particular app.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
 
-            PageTip(text: "Everything without a profile uses your default tone "
-                    + "(\(StyleSettings.defaultStyle.displayName)) and no template. "
-                    + "A profile can set either half, or both.")
-                .padding(.bottom, 16)
+                    tipBanner("Everything without a profile uses your default tone "
+                              + "(\(StyleSettings.defaultStyle.displayName)) and no template. "
+                              + "A profile can set either half, or both.")
+                        .padding(.top, 18)
 
-            if let note = app.rewriteEngine.availabilityNote {
-                PageTip(text: note).padding(.bottom, 12)
-            }
-
-            if profiles.isEmpty && !addingRule {
-                emptyState
-            } else {
-                let sorted = profiles.sorted { $0.value.appName < $1.value.appName }
-                VStack(spacing: 0) {
-                    ForEach(Array(sorted.enumerated()), id: \.element.key) { index, item in
-                        profileRow(bundleID: item.key, profile: item.value)
-                        if index != sorted.count - 1 {
-                            Rectangle().fill(Palette.border).frame(height: 1)
-                        }
+                    if let note = app.rewriteEngine.availabilityNote {
+                        tipBanner(note).padding(.top, 12)
                     }
+
+                    profileList
+                        .padding(.top, 16)
+
+                    if addingRule {
+                        addRow.padding(.top, 10)
+                    } else {
+                        addProfileButton.padding(.top, 10)
+                    }
+
+                    relatedLink
+                        .padding(.top, 14)
                 }
             }
-
-            if addingRule {
-                addRow
-            } else {
-                AddRowButton(title: "Add an app profile") {
-                    draftBundleID = ""
-                    runningApps = RunningApps.list
-                    addingRule = true
-                }
-                .padding(.top, 8)
-            }
-
-            RelatedLink(
-                prefix: "Want to reshape text on demand instead of automatically?",
-                linkTitle: "Transforms",
-                suffix: "run when you trigger them."
-            ) { page = .transforms }
         }
         .onAppear { templates = NoteTemplateStore.all() }
     }
 
-    private var emptyState: some View {
-        Text("No app profiles yet — every app uses your defaults.")
-            .font(.manrope(12.5))
-            .italic()
-            .foregroundStyle(Palette.inkFaint)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 24)
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("App Profiles")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("What Murmur does when you dictate into a particular app.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func tipBanner(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            MurmurIconView(icon: .help)
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Palette.warmInkSoft)
+                .padding(.top, 1)
+            Text(text)
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var profileList: some View {
+        if profiles.isEmpty && !addingRule {
+            Text("No app profiles yet — every app uses your defaults.")
+                .font(.manrope(12.5))
+                .italic()
+                .foregroundStyle(Palette.warmInkFaint)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else {
+            let sorted = profiles.sorted { $0.value.appName < $1.value.appName }
+            VStack(spacing: 0) {
+                ForEach(Array(sorted.enumerated()), id: \.element.key) { index, item in
+                    profileRow(bundleID: item.key, profile: item.value)
+                    // A divider sits on the boundary between two different
+                    // row backgrounds, so it can never be color-matched
+                    // away on both sides at once once either neighbor is
+                    // hover-tinted — omitting it there (rather than always
+                    // showing it) is the only fully seamless option; it
+                    // stays everywhere else, between two plain rows.
+                    if index != sorted.count - 1 {
+                        let nextKey = sorted[index + 1].key
+                        if hoveredBundleID != item.key && hoveredBundleID != nextKey {
+                            Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
     }
 
     // MARK: Rows
@@ -86,6 +138,12 @@ struct AppProfilesPage: View {
             profile: profile,
             templates: templates,
             summary: summary(for: profile),
+            isHovering: hoveredBundleID == bundleID,
+            onHoverChange: { inside in
+                hoveredBundleID = inside
+                    ? bundleID
+                    : (hoveredBundleID == bundleID ? nil : hoveredBundleID)
+            },
             onChange: { updated in
                 // Single-owner: assigning a hotkey slot already held by a
                 // different profile silently takes it from that profile —
@@ -111,9 +169,32 @@ struct AppProfilesPage: View {
             })
     }
 
+    private var addProfileButton: some View {
+        Button {
+            draftBundleID = ""
+            runningApps = RunningApps.list
+            addingRule = true
+        } label: {
+            HStack(spacing: 8) {
+                MurmurIconView(icon: .plus).frame(width: 13, height: 13)
+                Text("Add an app profile").font(.manrope(12.5, .semibold))
+            }
+            .foregroundStyle(Palette.warmInkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .foregroundStyle(Palette.warmDivider))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleButtonStyle(scale: 0.98))
+    }
+
     private var addRow: some View {
         HStack(spacing: 8) {
-            FieldSelect(
+            WarmFieldSelect(
                 options: [""] + runningApps.map(\.bundleID),
                 label: { id in
                     id.isEmpty
@@ -145,6 +226,24 @@ struct AppProfilesPage: View {
         .padding(.vertical, 9)
     }
 
+    private var relatedLink: some View {
+        HStack(spacing: 4) {
+            Text("Want to reshape text on demand instead of automatically?")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+            Button { page = .transforms } label: {
+                Text("Transforms")
+                    .font(.manrope(12, .medium))
+                    .foregroundStyle(Palette.sunsetDeep)
+            }
+            .buttonStyle(.plain)
+            Text("run when you trigger them.")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     /// Plain-language statement of what this profile actually produces —
     /// the thing the old two-page split made impossible to see.
     private func summary(for profile: AppProfile) -> String {
@@ -172,10 +271,10 @@ private struct ProfileRow: View {
     let profile: AppProfile
     let templates: [NoteTemplate]
     let summary: String
+    let isHovering: Bool
+    let onHoverChange: (Bool) -> Void
     let onChange: (AppProfile) -> Void
     let onDelete: () -> Void
-
-    @State private var hovering = false
 
     /// `nil` first so "inherit the default" is the top choice rather than
     /// something buried under five concrete tones.
@@ -196,14 +295,14 @@ private struct ProfileRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.appName)
                     .font(.manrope(13, .semibold))
-                    .foregroundStyle(Palette.ink)
+                    .foregroundStyle(Palette.warmInk)
                 Text(summary)
                     .font(.manrope(11))
-                    .foregroundStyle(Palette.inkSoft)
+                    .foregroundStyle(Palette.warmInkSoft)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            FieldSelect(
+            WarmFieldSelect(
                 options: styleOptions,
                 label: { $0?.displayName ?? "Default tone" },
                 selection: Binding(
@@ -214,7 +313,7 @@ private struct ProfileRow: View {
                         onChange(updated)
                     }))
 
-            FieldSelect(
+            WarmFieldSelect(
                 options: templateOptions,
                 label: { id in
                     guard let id else { return "No template" }
@@ -228,7 +327,7 @@ private struct ProfileRow: View {
                         onChange(updated)
                     }))
 
-            FieldSelect(
+            WarmFieldSelect(
                 options: hotkeyOptions,
                 label: { $0?.label ?? "No hotkey" },
                 selection: Binding(
@@ -240,20 +339,91 @@ private struct ProfileRow: View {
                     }))
 
             IconButton(icon: .trash, size: 22, iconSize: 12, help: "Delete", action: onDelete)
-                .opacity(hovering ? 1 : 0)
-                .animation(.easeOut(duration: 0.1), value: hovering)
+                .opacity(isHovering ? 1 : 0)
+                .animation(.easeOut(duration: 0.1), value: isHovering)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 11)
+        .padding(.vertical, 13)
         .background(
             RoundedRectangle(cornerRadius: Radius.sm)
-                .fill(hovering ? Palette.cardHover : Color.clear))
+                .fill(isHovering ? Palette.warmRowBorder.opacity(0.55) : Color.clear))
         // See HomeView.swift's historyRow for why this is needed: a .clear
         // background makes SwiftUI treat the row's empty space as outside
         // the hoverable region until this forces the whole padded frame to
         // count, regardless of what's actually drawn there.
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .onHover(perform: onHoverChange)
+    }
+}
+
+// MARK: - Warm field select
+//
+// Same `Button` + `.popover` mechanics as the shared `FieldSelect` (Menu
+// combined with `.menuStyle(.borderlessButton)` silently drops the custom
+// background/border on this build — see that type's own note), reskinned
+// in warm tokens throughout, including the popover's own list — the
+// shared version bakes `Palette.ink`/`.cardHover` into that list with no
+// override, so restyling only the trigger would leave a mismatched popover.
+
+private struct WarmFieldSelect<T: Hashable>: View {
+    let options: [T]
+    let label: (T) -> String
+    @Binding var selection: T
+    @State private var isOpen = false
+
+    var body: some View {
+        Button {
+            isOpen = true
+        } label: {
+            HStack(spacing: 6) {
+                Text(label(selection))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .font(.manrope(12, .medium))
+            .foregroundStyle(Palette.warmInkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmRowBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+            WarmFieldSelectList(options: options, label: label, selection: $selection, isOpen: $isOpen)
+        }
+    }
+}
+
+private struct WarmFieldSelectList<T: Hashable>: View {
+    let options: [T]
+    let label: (T) -> String
+    @Binding var selection: T
+    @Binding var isOpen: Bool
+    @State private var hovered: T?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(options, id: \.self) { option in
+                Button {
+                    selection = option
+                    isOpen = false
+                } label: {
+                    Text(label(option))
+                        .font(.manrope(12, .medium))
+                        .foregroundStyle(option == selection ? Palette.warmInk : Palette.warmInkSoft)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(hovered == option ? Palette.warmRowBorder : Color.clear)
+                }
+                .buttonStyle(.plain)
+                .onHover { inside in hovered = inside ? option : nil }
+            }
+        }
+        .padding(.vertical, 4)
+        .frame(minWidth: 160)
+        .environment(\.colorScheme, .light)
     }
 }
 

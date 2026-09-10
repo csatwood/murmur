@@ -23,7 +23,22 @@ final class WhisperCppEngine {
         ("base", "Base — fast, ~140 MB"),
         ("small", "Small — balanced, ~465 MB"),
         ("large-v3-turbo", "Large v3 Turbo — most precise, ~1.5 GB"),
+        ("large-v3-lv", "Large v3 (Latvian fine-tune) — Latvian only, ~1.7 GB"),
     ]
+
+    /// The one language a fine-tuned model is actually good for, if it's
+    /// restricted to one — `nil` for the general multilingual models above.
+    /// `large-v3-lv` (University of Latvia AiLab's Interspeech 2025
+    /// fine-tune of whisper-large-v3, trained on Common Voice 19 + the
+    /// LATE-Media broadcast corpus) measures 3.2% WER on Latvian versus
+    /// Parakeet v3's 22.84% — but it's fine-tuned purely on Latvian audio,
+    /// with no published data on retained multilingual competence, so
+    /// unlike the general models it shouldn't be offered as a substitute
+    /// for them on any other language. Mirrors `WhisperEngine.isEnglishOnly`
+    /// in spirit, just specialized toward a different single language.
+    static func restrictedLanguage(for model: String) -> String? {
+        model == "large-v3-lv" ? "lv" : nil
+    }
 
     /// Status line for the UI (loading/downloading/transcribing); nil clears.
     var onStatus: ((String?) -> Void)?
@@ -263,9 +278,26 @@ final class WhisperCppEngine {
 
     // MARK: - Model download
 
+    /// Where each model's GGML file actually lives. Everything downloads
+    /// from ggerganov's own conversions except the Latvian fine-tune,
+    /// which is a different upstream project (see `restrictedLanguage`)
+    /// hosted under its own repo with its own filename — AiLab publishes
+    /// several quantization levels; q8_0 is the one used here since
+    /// accuracy is the entire point of offering this model at all, and
+    /// q8_0 is close to full F16 quality without the full 3.1 GB download.
+    nonisolated private static func downloadSource(for model: String) -> URL? {
+        switch model {
+        case "large-v3-lv":
+            return URL(string:
+                "https://huggingface.co/AiLab-IMCS-UL/whisper-large-v3-lv-late-cv19/resolve/main/ggml-model-q8_0.bin")
+        default:
+            return URL(string:
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-\(model).bin")
+        }
+    }
+
     nonisolated private static func download(model: String, to destination: URL) async throws {
-        guard let source = URL(string:
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-\(model).bin")
+        guard let source = downloadSource(for: model)
         else { throw WhisperCppError.downloadFailed }
 
         try FileManager.default.createDirectory(

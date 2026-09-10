@@ -2,8 +2,16 @@ import SwiftUI
 
 // MARK: - Snippets
 //
-// Searchable list with a live count and inline add/edit/delete, matching
-// Dictionary's treatment — replacing the old stack of always-open editors.
+// Redesigned per the "Main" canvas (Snippets.dc.html): same `GlassPanelPage`
+// shell as Dictionary, warm palette instead of the shared dynamic
+// `Palette`. Functionally unchanged — searchable list with a live count
+// and inline add/edit/delete.
+//
+// The tip banner, search field, add-row button, and related-link row are
+// bespoke to this page rather than the shared `PageTip`/`SearchField`/
+// `AddRowButton`/`RelatedLink` components, matching Dictionary's own
+// reasoning: those are still tuned for the old dynamic/lime palette and
+// shared with pages that haven't been redesigned yet.
 
 struct SnippetsPage: View {
     @Binding var page: Page
@@ -15,40 +23,110 @@ struct SnippetsPage: View {
     @State private var addingNew = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "Snippets",
-                subtitle: "Say a trigger phrase, get a saved block pasted instead.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    tipBanner
+                        .padding(.top, 18)
+                    searchBar
+                        .padding(.top, 16)
+                    listCard
+                        .padding(.top, 14)
 
-            PageTip(text: "Say the trigger phrase exactly, ideally as its own pause — snippets "
-                    + "don't fuzzy-match like Dictionary does, so Murmur only expands it when "
-                    + "it hears the whole phrase.")
-                .padding(.bottom, 16)
+                    if addingNew {
+                        snippetEditRow(onSave: commitNew, onCancel: { addingNew = false })
+                            .padding(.top, 10)
+                    } else {
+                        addRowButton
+                            .padding(.top, 10)
+                    }
 
-            HStack {
-                SearchField(placeholder: "Search snippets…", text: $searchText)
-                Spacer()
-                Text("\(snippets.count) \(snippets.count == 1 ? "snippet" : "snippets")")
-                    .font(.manrope(11.5))
-                    .foregroundStyle(Palette.inkFaint)
+                    relatedLink
+                        .padding(.top, 14)
+                }
             }
-            .padding(.bottom, 12)
+        }
+        .onAppear { snippets = SnippetStore.load() }
+    }
 
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Snippets")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Say a trigger phrase, get a saved block pasted instead.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tipBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            MurmurIconView(icon: .help)
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Palette.warmInkSoft)
+                .padding(.top, 1)
+            Text("Say the trigger phrase exactly, ideally as its own pause — snippets "
+                 + "don't fuzzy-match like Dictionary does, so Murmur only expands it when "
+                 + "it hears the whole phrase.")
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var searchBar: some View {
+        HStack {
+            HStack(spacing: 8) {
+                MurmurIconView(icon: .search)
+                    .frame(width: 13, height: 13)
+                    .foregroundStyle(Palette.warmInkFaint)
+                TextField("Search snippets…", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.manrope(12.5))
+                    .foregroundStyle(Palette.warmInk)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: Radius.sm))
+            .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmRowBorder, lineWidth: 1))
+            .frame(width: 260)
+            Spacer()
+            Text(countLabel)
+                .font(.manrope(11.5))
+                .foregroundStyle(Palette.warmInkFaint)
+        }
+    }
+
+    private var listCard: some View {
+        Group {
             if visible.isEmpty {
                 Text(snippets.isEmpty
                      ? "No snippets yet — add signatures, addresses, or canned replies."
                      : "No matches.")
                     .font(.manrope(12.5))
                     .italic()
-                    .foregroundStyle(Palette.inkFaint)
+                    .foregroundStyle(Palette.warmInkFaint)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(visible.enumerated()), id: \.element.id) { index, snippet in
                         if editingID == snippet.id {
-                            snippetForm(onSave: { commitEdit(snippet) },
-                                        onCancel: { editingID = nil })
+                            snippetEditRow(onSave: { commitEdit(snippet) },
+                                           onCancel: { editingID = nil })
                         } else {
                             SnippetRow(
                                 snippet: snippet,
@@ -63,56 +141,83 @@ struct SnippetsPage: View {
                                 })
                         }
                         if index != visible.count - 1 {
-                            Rectangle().fill(Palette.border).frame(height: 1)
+                            Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
                         }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             }
-
-            if addingNew {
-                snippetForm(onSave: commitNew, onCancel: { addingNew = false })
-                    .padding(.top, 6)
-            } else {
-                AddRowButton(title: "Add snippet") {
-                    draftTrigger = ""
-                    draftExpansion = ""
-                    addingNew = true
-                }
-                .padding(.top, 8)
-            }
-
-            RelatedLink(
-                prefix: "Need to reshape what you just said, not insert fixed text?",
-                linkTitle: "Templates",
-                suffix: "restructure the transcript itself."
-            ) { page = .templates }
         }
-        .onAppear { snippets = SnippetStore.load() }
     }
 
-    private func snippetForm(onSave: @escaping () -> Void, onCancel: @escaping () -> Void) -> some View {
+    private func snippetEditRow(onSave: @escaping () -> Void, onCancel: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 8) {
             TextField("Say this…", text: $draftTrigger)
                 .textFieldStyle(.plain)
                 .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInk)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                .background(Palette.warmRowBorder, in: RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmDivider, lineWidth: 1))
                 .frame(width: 140)
-            Text("→").foregroundStyle(Palette.inkFaint).padding(.top, 8)
+            Text("→").foregroundStyle(Palette.warmInkFaint).padding(.top, 8)
             TextEditor(text: $draftExpansion)
                 .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInk)
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .frame(minHeight: 60)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                .background(Palette.warmRowBorder, in: RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmDivider, lineWidth: 1))
             IconButton(icon: .check, help: "Save", action: onSave).padding(.top, 2)
             IconButton(icon: .plus, rotated: true, help: "Cancel", action: onCancel).padding(.top, 2)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 9)
+    }
+
+    private var addRowButton: some View {
+        Button {
+            draftTrigger = ""
+            draftExpansion = ""
+            addingNew = true
+        } label: {
+            HStack(spacing: 8) {
+                MurmurIconView(icon: .plus).frame(width: 13, height: 13)
+                Text("Add snippet").font(.manrope(12.5, .semibold))
+            }
+            .foregroundStyle(Palette.warmInkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.sm)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .foregroundStyle(Palette.warmDivider))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressScaleButtonStyle(scale: 0.98))
+    }
+
+    private var relatedLink: some View {
+        HStack(spacing: 4) {
+            Text("Need to reshape what you just said, not insert fixed text?")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+            Button { page = .templates } label: {
+                Text("Templates")
+                    .font(.manrope(12, .medium))
+                    .foregroundStyle(Palette.sunsetDeep)
+            }
+            .buttonStyle(.plain)
+            Text("restructure the transcript itself.")
+                .font(.manrope(12))
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var visible: [Snippet] {
@@ -121,6 +226,10 @@ struct SnippetsPage: View {
         return snippets.filter {
             $0.trigger.lowercased().contains(term) || $0.expansion.lowercased().contains(term)
         }
+    }
+
+    private var countLabel: String {
+        "\(snippets.count) \(snippets.count == 1 ? "snippet" : "snippets")"
     }
 
     private func commitEdit(_ snippet: Snippet) {
@@ -158,11 +267,11 @@ private struct SnippetRow: View {
         HStack(alignment: .top, spacing: 16) {
             Text(snippet.trigger)
                 .font(.manrope(13, .medium))
-                .foregroundStyle(Palette.accentText)
+                .foregroundStyle(Palette.sunsetDeep)
                 .frame(width: 140, alignment: .leading)
             Text(snippet.expansion.replacingOccurrences(of: "\n", with: " "))
                 .font(.manrope(13))
-                .foregroundStyle(Palette.ink)
+                .foregroundStyle(Palette.warmInk)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 6) {
@@ -176,7 +285,7 @@ private struct SnippetRow: View {
         .padding(.vertical, 15)
         .background(
             RoundedRectangle(cornerRadius: Radius.sm)
-                .fill(hovering ? Palette.cardHover : Color.clear))
+                .fill(hovering ? Palette.warmRowBorder : Color.clear))
         // See HomeView.swift's historyRow for why this is needed: a .clear
         // background makes SwiftUI treat the row's empty space as outside
         // the hoverable region until this forces the whole padded frame to

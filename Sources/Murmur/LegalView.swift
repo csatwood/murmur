@@ -17,29 +17,81 @@ import SwiftUI
 
 struct LegalPage: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            PageHeader(
-                title: "Legal",
-                subtitle: "Murmur is open-source under the MIT license, and built with the "
-                    + "help of a few other open-source projects. Their licenses are "
-                    + "reproduced here in full, as each requires.")
+        GlassPanelPage {
+            // `ThinScrollView`, not a plain `ScrollView` — see
+            // ScratchpadView.swift's own note on why: a bare
+            // `.scrollIndicators(.hidden)` doesn't reliably suppress
+            // macOS's native scroller by itself.
+            ThinScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
 
-            SectionHead(title: "Open-source components")
-            Card(flat: true) {
-                ForEach(Array(OpenSourceComponent.all.enumerated()), id: \.offset) { index, component in
-                    LicenseItem(component: component)
-                    if index != OpenSourceComponent.all.count - 1 {
-                        Rectangle().fill(Palette.border).frame(height: 1)
+                    Text("Open-source components")
+                        .font(.manrope(13, .semibold))
+                        .foregroundStyle(Palette.warmInk)
+                        .padding(.top, 18)
+
+                    VStack(spacing: 0) {
+                        ForEach(Array(OpenSourceComponent.all.enumerated()), id: \.offset) { index, component in
+                            LicenseItem(component: component)
+                            if index != OpenSourceComponent.all.count - 1 {
+                                Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+                            }
+                        }
                     }
-                }
-            }
+                    .padding(.top, 6)
 
-            PageTip(
-                text: "Murmur's own source is on GitHub under the MIT license. The licenses "
-                    + "above cover the third-party components listed, each used under terms "
-                    + "that permit open-source redistribution.")
-            .padding(.top, 18)
+                    tipBanner
+                        .padding(.top, 18)
+                }
+                // The mockup caps this page's content at 760px rather
+                // than letting it span the full glass panel — long
+                // license text reads better in a narrower column.
+                .frame(maxWidth: 760, alignment: .leading)
+            }
         }
+        // Applied once, here, rather than per `DisclosureGroup` — see
+        // HelpView.swift's own twin of this style for why: macOS's
+        // default indicator sits on the *leading* edge, ahead of the
+        // component name, instead of trailing after the summary like
+        // the mockup.
+        .disclosureGroupStyle(TrailingCaretDisclosureStyle())
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Legal")
+                .font(.manrope(22, .medium))
+                .tracking(-0.33)
+                .foregroundStyle(Palette.warmInk)
+            Text("Murmur is open-source under the MIT license, and built with the help "
+                 + "of a few other open-source projects. Their licenses are reproduced "
+                 + "here in full, as each requires.")
+                .font(.manrope(12.5))
+                .foregroundStyle(Palette.warmInkFaint)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var tipBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            MurmurIconView(icon: .help)
+                .frame(width: 13, height: 13)
+                .foregroundStyle(Palette.warmInkSoft)
+                .padding(.top, 1)
+            Text("Murmur's own source is on GitHub under the MIT license. The licenses "
+                 + "above cover the third-party components listed, each used under "
+                 + "terms that permit open-source redistribution.")
+                .font(.manrope(12.5))
+                .lineSpacing(3)
+                .foregroundStyle(Palette.warmInkSoft)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -49,41 +101,78 @@ private struct LicenseItem: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(component.copyright)
                     .font(.manrope(11.5, .medium))
-                    .foregroundStyle(Palette.inkSoft)
-                ScrollView {
+                    .foregroundStyle(Palette.warmInkSoft)
+                ThinScrollView {
                     Text(component.fullText)
                         .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(Palette.inkSoft)
+                        .foregroundStyle(Palette.warmInkSoft)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
                 }
                 .frame(maxHeight: 220)
-                .padding(10)
-                .background(Palette.panel, in: RoundedRectangle(cornerRadius: Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.border, lineWidth: 1))
+                .background(Palette.homeGradientBottom, in: RoundedRectangle(cornerRadius: Radius.sm))
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm).stroke(Palette.warmRowBorder, lineWidth: 1))
             }
-            .padding(.top, 6)
-            .padding(.bottom, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 16)
         } label: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text(component.name)
-                        .font(.manrope(13.5, .medium))
-                        .foregroundStyle(Palette.ink)
-                    Chip(text: component.license)
+                        .font(.manrope(13.5, .semibold))
+                        .foregroundStyle(Palette.warmInk)
+                    Text(component.license)
+                        .font(.manrope(11))
+                        .foregroundStyle(Palette.warmInkSoft)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 2)
+                        .background(Palette.warmRowBorder, in: Capsule())
+                        .overlay(Capsule().stroke(Palette.warmDivider, lineWidth: 1))
                 }
                 Text(component.purpose)
                     .font(.manrope(12))
-                    .foregroundStyle(Palette.inkSoft)
+                    .foregroundStyle(Palette.warmInkSoft)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .tint(Palette.inkFaint)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+    }
+}
+
+/// Moves `DisclosureGroup`'s indicator to the trailing edge of its label,
+/// matching the mockup's own summary layout (name, chip, then the
+/// chevron) — see HelpView.swift's own twin of this for the fuller note;
+/// kept as a separate copy here since `private` there scopes it to that
+/// file.
+private struct TrailingCaretDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.murmurEase(0.15)) { configuration.isExpanded.toggle() }
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    configuration.label
+                    Spacer(minLength: 8)
+                    MurmurIconView(icon: .caret)
+                        .frame(width: 9, height: 9)
+                        .foregroundStyle(Palette.warmInkFainter)
+                        .padding(.top, 4)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if configuration.isExpanded {
+                configuration.content
+            }
+        }
     }
 }
 
@@ -130,6 +219,14 @@ private struct OpenSourceComponent {
             copyright: "Copyright 2018 The Manrope Project Authors "
                 + "(https://github.com/sharanda/manrope)",
             fullText: manropeOFL),
+        OpenSourceComponent(
+            name: "Phosphor Icons",
+            purpose: "Every icon throughout Murmur's interface — not linked in as a "
+                + "package (Phosphor ships no Swift target), so each icon's path data "
+                + "is reproduced directly in MurmurIcons.swift instead.",
+            license: "MIT",
+            copyright: "Copyright (c) 2023 Phosphor Icons",
+            fullText: mitLicense(copyright: "Copyright (c) 2023 Phosphor Icons")),
     ]
 }
 
