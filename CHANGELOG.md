@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v2.1.0 — 2026-09-10
+
+Dictation language support now actually works end-to-end — the language
+picker, the recognition engines, and every post-processing step agree with
+each other, which they didn't before. Also a warm-palette redesign across
+most of the app.
+
 ### New
 
 - **Fourth recognition engine**: Parakeet, NVIDIA's TDT model running via
@@ -9,6 +16,42 @@
   the Neural Engine) — Murmur's fastest engine yet, in two sizes (English
   v2, multilingual v3). Vocabulary biasing isn't available for it yet,
   unlike the two Whisper engines.
+- **Dedicated Latvian model**: a whisper.cpp option running the University
+  of Latvia AI Lab's Interspeech 2025 fine-tune of Whisper large-v3 —
+  3.2% word error rate on Latvian versus Parakeet v3's 22.84%.
+- Settings' language picker now reflects whichever recognition engine and
+  model is actually selected, instead of always showing Apple's fixed
+  on-device locale list regardless of engine.
+- GitHub Releases-based update checking on the Software settings page —
+  no auto-installer, "Update Now" opens the release in your browser.
+
+### Fixed
+
+- Harper's grammar pass, personal "learned corrections," your dictionary,
+  and the Apple Intelligence cleanup pass all ran unconditionally on every
+  dictation regardless of language — for anything other than English, they
+  silently "corrected" real words toward English ones. All four now only
+  run when the dictation language is English.
+- Switching to an English-only model (Parakeet v2, Distil-Whisper) and
+  back used to leave you stuck on English afterward instead of restoring
+  your actual language.
+- Parakeet v3's language list is cut from the 25 NVIDIA documents down to
+  the 10 FluidAudio's own benchmark measures under 10% word error rate —
+  the rest weren't accurate enough to offer without a real fix (see the
+  Latvian model above for the one language that got one).
+- Settings dropdown panels (Recognition engine, model pickers, Language)
+  could clip against the bottom of the window at its default size, or
+  float away from their own trigger instead of opening right above/below
+  it — root cause was a SwiftUI environment value silently resolving to
+  `nil` one level higher in the view hierarchy than it needed to.
+- The Dictation key picker now matches the same dropdown style as every
+  other control on the Settings page, instead of an older, plainer one.
+
+### Changed
+
+- Warm-palette redesign across Home, Ask Murmur, Scratchpad, Style,
+  Templates, Transforms, Voice Profile, Dictionary, Snippets, Insights,
+  Help, Legal, and App Profiles.
 
 ## v2.0.1 — 2026-08-25
 
