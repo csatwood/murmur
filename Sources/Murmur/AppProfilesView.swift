@@ -135,6 +135,7 @@ struct AppProfilesPage: View {
 
     private func profileRow(bundleID: String, profile: AppProfile) -> some View {
         ProfileRow(
+            bundleID: bundleID,
             profile: profile,
             templates: templates,
             summary: summary(for: profile),
@@ -268,6 +269,7 @@ struct AppProfilesPage: View {
 // MARK: - Row
 
 private struct ProfileRow: View {
+    let bundleID: String
     let profile: AppProfile
     let templates: [NoteTemplate]
     let summary: String
@@ -282,12 +284,39 @@ private struct ProfileRow: View {
         [nil] + WritingStyle.allCases.map { Optional($0) }
     }
 
+    /// What "Default tone" actually resolves to for this app — plain
+    /// global default everywhere, except a recognized terminal, which
+    /// `AppProfileStore.style(forBundleID:)` auto-defaults to Raw. Stated
+    /// rather than left to look up, same as the developer-vocabulary
+    /// picker below.
+    private var defaultStyleLabel: String {
+        DeveloperVocabulary.terminalBundleIDs.contains(bundleID)
+            ? "Default (Raw)" : "Default (\(StyleSettings.defaultStyle.displayName))"
+    }
+
     private var templateOptions: [UUID?] {
         [nil] + templates.map { Optional($0.id) }
     }
 
     private var hotkeyOptions: [ProfileHotkeySlot?] {
         [nil] + ProfileHotkeySlot.allCases.map { Optional($0) }
+    }
+
+    private var developerVocabularyOptions: [Bool?] { [nil, true, false] }
+
+    /// What "Auto" actually resolves to for this specific app, so the
+    /// picker states its guess rather than leaving it to look them up.
+    private var autoDefaultLabel: String {
+        DeveloperVocabulary.developerContextBundleIDs.contains(bundleID)
+            ? "Developer: Auto (on)" : "Developer: Auto (off)"
+    }
+
+    private func developerVocabularyLabel(_ value: Bool?) -> String {
+        switch value {
+        case nil: return autoDefaultLabel
+        case true?: return "Developer: On"
+        case false?: return "Developer: Off"
+        }
     }
 
     var body: some View {
@@ -304,7 +333,7 @@ private struct ProfileRow: View {
 
             WarmFieldSelect(
                 options: styleOptions,
-                label: { $0?.displayName ?? "Default tone" },
+                label: { $0?.displayName ?? defaultStyleLabel },
                 selection: Binding(
                     get: { profile.style },
                     set: { newValue in
@@ -335,6 +364,17 @@ private struct ProfileRow: View {
                     set: { newValue in
                         var updated = profile
                         updated.hotkeySlot = newValue
+                        onChange(updated)
+                    }))
+
+            WarmFieldSelect(
+                options: developerVocabularyOptions,
+                label: developerVocabularyLabel,
+                selection: Binding(
+                    get: { profile.developerVocabulary },
+                    set: { newValue in
+                        var updated = profile
+                        updated.developerVocabulary = newValue
                         onChange(updated)
                     }))
 

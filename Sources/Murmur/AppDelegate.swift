@@ -569,10 +569,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// engine handles the dictation, and Whisper takes over once ready.
     /// Whisper failures also fall back to Apple so a keypress always
     /// produces text.
-    private func recognize(fileAt url: URL) async throws -> String {
-        let biasTerms = LearnedStore.biasTerms()
+    private func recognize(fileAt url: URL, bundleID: String?) async throws -> String {
+        let developerVocabulary = AppProfileStore.developerVocabularyEnabled(forBundleID: bundleID)
+        let biasTerms = LearnedStore.biasTerms(includeDeveloperVocabulary: developerVocabulary)
         dictationLog.info(
-            "recognize: engine=\(Settings.engine, privacy: .public) locale=\(Settings.localeIdentifier, privacy: .public) parakeetReady=\(self.parakeetEngine.isReady(model: Settings.parakeetModel)) whisperReady=\(self.whisperEngine.isReady(model: Settings.whisperModel)) whisperCppReady=\(self.whisperCppEngine.isReady(model: Settings.whisperCppModel))")
+            "recognize: engine=\(Settings.engine, privacy: .public) locale=\(Settings.localeIdentifier, privacy: .public) developerVocabulary=\(developerVocabulary) parakeetReady=\(self.parakeetEngine.isReady(model: Settings.parakeetModel)) whisperReady=\(self.whisperEngine.isReady(model: Settings.whisperModel)) whisperCppReady=\(self.whisperCppEngine.isReady(model: Settings.whisperCppModel))")
         if Settings.engine == "whisper" {
             if whisperEngine.isReady(model: Settings.whisperModel) {
                 do {
@@ -797,8 +798,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             }
             do {
                 dictationLog.info("recognize: start")
-                let raw = try await recognize(fileAt: url)
+                let raw = try await recognize(fileAt: url, bundleID: resolvedBundleID)
                 dictationLog.info("recognize: done, \(raw.count) chars")
+                let developerVocabulary = AppProfileStore.developerVocabularyEnabled(
+                    forBundleID: resolvedBundleID)
 
                 // Whisper-family engines hallucinate a small, specific set
                 // of sign-off phrases ("Thank you.") on near-silent audio
@@ -843,7 +846,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // code editors, where "corrections" would be corruption.
                     formatted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                     if isEnglishDictation {
-                        formatted = LearnedStore.apply(in: formatted)
+                        formatted = LearnedStore.apply(
+                            in: formatted, includeDeveloperVocabulary: developerVocabulary)
                     }
                     formatted = SnippetStore.expand(in: formatted)
                 } else {
@@ -851,7 +855,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                         dictionary: isEnglishDictation ? TextFormatter.loadDictionary() : [:]
                     ).format(raw)
                     if isEnglishDictation {
-                        formatted = LearnedStore.apply(in: formatted)
+                        formatted = LearnedStore.apply(
+                            in: formatted, includeDeveloperVocabulary: developerVocabulary)
                     }
                     formatted = SnippetStore.expand(in: formatted)
 
@@ -937,7 +942,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // "corrects" other languages' real words into the
                     // nearest English one instead of leaving them alone.
                     if !formatted.isEmpty, isEnglishDictation {
-                        formatted = HarperChecker.fix(formatted)
+                        formatted = HarperChecker.fix(
+                            formatted,
+                            vocabulary: LearnedStore.biasTerms(
+                                includeDeveloperVocabulary: developerVocabulary))
                     }
                 }
                 dictationLog.info("pipeline done: \(formatted.count) chars")

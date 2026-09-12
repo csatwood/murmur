@@ -169,10 +169,16 @@ final class WhisperEngine {
         }
 
         // Vocabulary biasing: Whisper conditions on a decoder prompt, so
-        // listing the user's terms makes it far likelier to spell them right.
+        // listing the user's terms makes it far likelier to spell them
+        // right. 150, not 60: `biasTerms()` now leads with Murmur's ~110
+        // built-in developer terms before the user's own — a cutoff of 60
+        // let personal terms alone (74 for one real user) push every
+        // built-in term out of the prompt entirely. `tokens.prefix(200)`
+        // below is the real, token-level safety net if this is still too
+        // generous for a given tokenizer.
         if !biasTerms.isEmpty, let tokenizer = pipe.tokenizer {
             let prompt = "Vocabulary: "
-                + biasTerms.prefix(60).joined(separator: ", ") + "."
+                + biasTerms.prefix(150).joined(separator: ", ") + "."
             let tokens = tokenizer.encode(text: " " + prompt)
                 .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
             options.promptTokens = Array(tokens.prefix(200))

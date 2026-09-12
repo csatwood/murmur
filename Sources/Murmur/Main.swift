@@ -13,6 +13,7 @@ struct MurmurMain {
         var whisperModel = Settings.whisperModel
         var templateName: String?
         var transformID: String?
+        var bundleID: String?
 
         while let argument = arguments.next() {
             switch argument {
@@ -54,6 +55,8 @@ struct MurmurMain {
                 mode = .selftest
             case "--locale":
                 localeIdentifier = arguments.next() ?? localeIdentifier
+            case "--bundle-id":
+                bundleID = arguments.next() ?? bundleID
             case "--help", "-h":
                 usageAndExit()
             default:
@@ -70,18 +73,32 @@ struct MurmurMain {
             let profilesPassed = AppProfileStore.runSelfTest()
             let audioPassed = AudioRecorder.runSelfTest()
             let hallucinationPassed = HallucinationFilter.runSelfTest()
+            let developerVocabPassed = DeveloperVocabulary.runSelfTest()
             exit(formatterPassed && learnedPassed && templatesPassed && askPassed
-                 && profilesPassed && audioPassed && hallucinationPassed ? 0 : 1)
+                 && profilesPassed && audioPassed && hallucinationPassed
+                 && developerVocabPassed ? 0 : 1)
 
         case .format(let text):
             // Same pipeline as live dictation: format, apply learned
-            // corrections, then expand snippets.
+            // corrections, then expand snippets. --bundle-id resolves
+            // developer-vocabulary the same way a real dictation into that
+            // app would (default: off, matching a `nil` bundle ID/no
+            // resolvable frontmost app).
+            let developerVocabulary = AppProfileStore.developerVocabularyEnabled(
+                forBundleID: bundleID)
             print(SnippetStore.expand(
-                in: LearnedStore.apply(in: TextFormatter().format(text))))
+                in: LearnedStore.apply(
+                    in: TextFormatter().format(text),
+                    includeDeveloperVocabulary: developerVocabulary)))
             exit(0)
 
         case .harperFix(let text):
-            print(HarperChecker.fix(text))
+            let developerVocabulary = AppProfileStore.developerVocabularyEnabled(
+                forBundleID: bundleID)
+            print(HarperChecker.fix(
+                text,
+                vocabulary: LearnedStore.biasTerms(
+                    includeDeveloperVocabulary: developerVocabulary)))
             exit(0)
 
         case .transform(let text):
@@ -176,6 +193,14 @@ struct MurmurMain {
 
         case .transcribe(let path):
             do {
+                // --bundle-id resolves developer-vocabulary the same way a
+                // real dictation into that app would (default: off,
+                // matching a `nil` bundle ID/no resolvable frontmost app) —
+                // pass e.g. `--bundle-id com.apple.dt.Xcode` to reproduce
+                // what actually happens dictating into a recognized
+                // developer-context app instead of the CLI's own default.
+                let developerVocabulary = AppProfileStore.developerVocabularyEnabled(
+                    forBundleID: bundleID)
                 let raw: String
                 if engineName == "whisper" {
                     let whisper = WhisperEngine()
@@ -188,7 +213,8 @@ struct MurmurMain {
                         fileAt: URL(fileURLWithPath: path),
                         model: whisperModel,
                         localeID: localeIdentifier,
-                        biasTerms: LearnedStore.biasTerms())
+                        biasTerms: LearnedStore.biasTerms(
+                            includeDeveloperVocabulary: developerVocabulary))
                 } else if engineName == "whispercpp" {
                     let whisperCpp = WhisperCppEngine()
                     whisperCpp.onStatus = { status in
@@ -200,7 +226,8 @@ struct MurmurMain {
                         fileAt: URL(fileURLWithPath: path),
                         model: whisperModel,
                         localeID: localeIdentifier,
-                        biasTerms: LearnedStore.biasTerms())
+                        biasTerms: LearnedStore.biasTerms(
+                            includeDeveloperVocabulary: developerVocabulary))
                 } else if engineName == "parakeet" {
                     let parakeet = ParakeetEngine()
                     parakeet.onStatus = { status in
@@ -212,19 +239,64 @@ struct MurmurMain {
                         fileAt: URL(fileURLWithPath: path),
                         model: whisperModel,
                         localeID: localeIdentifier,
-                        biasTerms: LearnedStore.biasTerms())
+                        biasTerms: LearnedStore.biasTerms(
+                            includeDeveloperVocabulary: developerVocabulary))
                 } else {
                     let transcriber = Transcriber(
                         locale: Locale(identifier: localeIdentifier))
                     raw = try await transcriber.transcribe(
                         fileAt: URL(fileURLWithPath: path),
-                        biasTerms: LearnedStore.biasTerms())
+                        biasTerms: LearnedStore.biasTerms(
+                            includeDeveloperVocabulary: developerVocabulary))
                 }
                 // Full live-dictation pipeline: format → learned corrections
-                // → snippet expansion.
-                let formatted = SnippetStore.expand(
-                    in: LearnedStore.apply(in: TextFormatter().format(raw)))
+                // → snippet expansion → Harper — everything the real style
+                // resolved for --bundle-id runs except the Apple
+                // Intelligence rewrite pass, left out here since it's
+                // non-deterministic and needs on-device model availability
+                // this debug path shouldn't depend on. Personal corrections
+                // and Harper are gated to English, matching AppDelegate's
+                // `isEnglishDictation` — both assume English input and
+                // corrupt other languages' real words otherwise.
+                //
+                // Branches on `AppProfileStore.style(forBundleID:)` the
+                // same way AppDelegate does — this used to run one fixed
+                // sequence regardless of --bundle-id, so it could not
+                // exercise Raw mode's "skip formatting/Harper entirely"
+                // path at all. Found by testing the terminal-defaults-to-
+                // Raw change immediately after building it: every
+                // --bundle-id gave the same output, silently, because
+                // this pipeline never branched on the value it resolved.
+                let isEnglishDictation =
+                    String(localeIdentifier.prefix(while: { $0 != "-" }))
+                    .lowercased() == "en"
+                let style = AppProfileStore.style(forBundleID: bundleID)
+                var formatted: String
+                if style.skipsAllProcessing {
+                    formatted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if isEnglishDictation {
+                        formatted = LearnedStore.apply(
+                            in: formatted, includeDeveloperVocabulary: developerVocabulary)
+                    }
+                    formatted = SnippetStore.expand(in: formatted)
+                } else {
+                    formatted = TextFormatter(
+                        dictionary: isEnglishDictation ? TextFormatter.loadDictionary() : [:]
+                    ).format(raw)
+                    if isEnglishDictation {
+                        formatted = LearnedStore.apply(
+                            in: formatted, includeDeveloperVocabulary: developerVocabulary)
+                    }
+                    formatted = SnippetStore.expand(in: formatted)
+                    if isEnglishDictation {
+                        formatted = HarperChecker.fix(
+                            formatted,
+                            vocabulary: LearnedStore.biasTerms(
+                                includeDeveloperVocabulary: developerVocabulary))
+                    }
+                }
                 print("RAW: \(raw)")
+                print("style: \(style.rawValue)")
                 print("FORMATTED: \(formatted)")
                 exit(0)
             } catch {
@@ -277,7 +349,12 @@ struct MurmurMain {
           Murmur --transcribe <file>  transcribe an audio file
                                       [--locale en-US] [--engine apple|whisper|whispercpp|parakeet]
                                       [--whisper-model base|small|large-v3-v20240930_turbo]
+                                      [--bundle-id com.apple.dt.Xcode] to test as
+                                      if dictating into that app (developer
+                                      vocabulary on/off resolves the same way);
+                                      omitted, resolves like no app is focused
           Murmur --format "<text>"    run the text formatter on a string
+                                      [--bundle-id ...] same as --transcribe
           Murmur --transform "<text>" run a ⌥1/⌥2 Transform (Polish by default)
                                       [--transform-id promptEngineer] to pick
                                       a different one from Transform.all

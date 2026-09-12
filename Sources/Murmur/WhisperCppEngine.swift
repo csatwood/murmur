@@ -144,9 +144,18 @@ final class WhisperCppEngine {
 
         // Vocabulary biasing: the direct whisper.cpp equivalent of
         // WhisperKit's decoder prompt tokens — prepended free-text context
-        // rather than pre-encoded tokens, but the same intent.
+        // rather than pre-encoded tokens, but the same intent. 150, not
+        // 60 — see WhisperEngine's matching comment: `biasTerms()` now
+        // leads with Murmur's ~110 built-in developer terms, and 60 was
+        // tight enough that personal terms alone already crowded all of
+        // them out. No secondary token-level cap here (unlike
+        // WhisperEngine's `tokens.prefix(200)`) — whisper.cpp's own
+        // `initial_prompt` handling truncates internally if this is ever
+        // too long for its context window, so this doesn't risk a crash.
         let prompt = biasTerms.isEmpty ? nil
-            : "Vocabulary: " + biasTerms.prefix(60).joined(separator: ", ") + "."
+            : "Vocabulary: " + biasTerms.prefix(150).joined(separator: ", ") + "."
+        dictationLog.info(
+            "whisper.cpp prompt: terms=\(biasTerms.count) chars=\(prompt?.count ?? 0) preview=\(String((prompt ?? "").prefix(300)), privacy: .public)")
 
         onStatus?("Transcribing (whisper.cpp)")
         defer { onStatus?(nil) }

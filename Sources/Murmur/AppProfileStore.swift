@@ -20,13 +20,21 @@ struct AppProfile: Codable, Equatable {
     /// app itself. Set, it also force-starts a dictation resolved against
     /// this profile from anywhere, via `ProfileHotkeyMonitor`.
     var hotkeySlot: ProfileHotkeySlot?
+    /// `nil` inherits the auto-detected default for this app's bundle ID
+    /// (`DeveloperVocabulary.developerContextBundleIDs`) rather than
+    /// pinning one — set `true`/`false` only to override that guess for
+    /// this specific app, in either direction.
+    var developerVocabulary: Bool?
 
-    /// A profile with none of the three set does nothing; used to prune
-    /// empties. A hotkey-only profile (style/template both nil) is still
+    /// A profile with none of the four set does nothing; used to prune
+    /// empties. A hotkey-only profile (everything else nil) is still
     /// meaningful — pressing it forces resolution to this bundle ID, which
-    /// without a style/template override just falls back to the global
-    /// defaults — so it must survive pruning just like the other two halves.
-    var isEmpty: Bool { style == nil && templateID == nil && hotkeySlot == nil }
+    /// without any other override just falls back to the global defaults —
+    /// so it must survive pruning just like the other halves.
+    var isEmpty: Bool {
+        style == nil && templateID == nil && hotkeySlot == nil
+            && developerVocabulary == nil
+    }
 }
 
 enum AppProfileStore {
@@ -59,9 +67,39 @@ enum AppProfileStore {
         return profiles[bundleID]
     }
 
-    /// The tone to use for an app: its own override, else the global default.
+    /// The tone to use for an app: its own override, else Raw if this is a
+    /// recognized literal terminal (`DeveloperVocabulary.terminalBundleIDs`
+    /// — Terminal, iTerm, Warp, ... where Claude Code/Codex CLI actually
+    /// run), else the global default. Scoped to terminals specifically,
+    /// not the broader developer-context list `developerVocabularyEnabled`
+    /// uses: a terminal has no use for capitalized, LLM-polished prose
+    /// (dictated text there is shell syntax, where that rewrite is
+    /// actively risky, not just slow), but a code editor or an AI chat
+    /// app is often prose that benefits from the same cleanup any other
+    /// app gets — auto-silencing it there would be a regression, not a fix.
     static func style(forBundleID bundleID: String?) -> WritingStyle {
-        profile(forBundleID: bundleID)?.style ?? StyleSettings.defaultStyle
+        if let override = profile(forBundleID: bundleID)?.style {
+            return override
+        }
+        if let bundleID, DeveloperVocabulary.terminalBundleIDs.contains(bundleID) {
+            return .raw
+        }
+        return StyleSettings.defaultStyle
+    }
+
+    /// Whether Murmur's built-in developer vocabulary (terms + corrections)
+    /// should bias recognition for this app: the profile's own override if
+    /// one is set, else whether the bundle ID is a recognized developer
+    /// context. A `nil` bundle ID (no resolvable frontmost app) has no
+    /// profile to check and isn't in the built-in list either, so it
+    /// resolves to `false` — the same safe-by-default the built-in list
+    /// itself follows.
+    static func developerVocabularyEnabled(forBundleID bundleID: String?) -> Bool {
+        if let override = profile(forBundleID: bundleID)?.developerVocabulary {
+            return override
+        }
+        guard let bundleID else { return false }
+        return DeveloperVocabulary.developerContextBundleIDs.contains(bundleID)
     }
 
     /// The template to auto-apply in an app, resolved against the current
