@@ -10,12 +10,25 @@ noise, or far-field conditions. Treat it as a first screening pass, the same
 caution the report itself gives about leaderboard numbers: useful for
 narrowing candidates, not for a final call.
 
+The fifth row, TheWhisper (TheStageAI), isn't a Murmur engine — there's no
+Swift/CoreML path for it that doesn't require an account and API token for
+TheStageAI's proprietary AppleSDK (https://app.thestage.ai), which is a
+vendor decision this script doesn't make for you. Instead it runs the same
+public checkpoint (TheStageAI/thewhisper-large-v3-turbo) through plain
+`transformers` on CPU/MPS, so its WER is comparable but its latency/RSS are
+not (no ANE acceleration). Needs a separate venv:
+    python3.12 -m venv .venv-thewhisper
+    .venv-thewhisper/bin/pip install torch transformers soundfile
+Missing that venv just skips the row — the other four still run.
+
 Usage:
     ./scripts/benchmark_engines.py [--app path/to/Murmur.app]
+    ./scripts/benchmark_engines.py --thewhisper-python .venv-thewhisper/bin/python
 """
 import argparse
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -34,6 +47,8 @@ ENGINE_CONFIGS = [
     ("whispercpp", "small"),
     ("parakeet", "v3"),
 ]
+
+THEWHISPER_MODEL_ID = "TheStageAI/thewhisper-large-v3-turbo"
 
 WORD_RE = re.compile(r"[a-z0-9']+")
 
@@ -79,16 +94,53 @@ def run_once(binary: Path, audio_file: Path, engine: str, model: Optional[str]):
     return formatted, elapsed, peak_rss_mb
 
 
+def run_thewhisper(python_bin: Path, audio_files: List[Path]):
+    """Runs the TheWhisper worker (a separate venv/process — see the module
+    docstring) and returns (texts, latencies), or None if it can't run."""
+    worker = Path(__file__).resolve().parent / "_thewhisper_worker.py"
+    try:
+        result = subprocess.run(
+            [str(python_bin), str(worker), *(str(f) for f in audio_files)],
+            capture_output=True, text=True, timeout=600)
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        print(f"  TheWhisper worker failed ({python_bin}):", file=sys.stderr)
+        print(result.stderr[-2000:], file=sys.stderr)
+        return None
+
+    texts, latencies = [], []
+    for line in result.stdout.splitlines():
+        if not line.startswith("TEXT: "):
+            continue
+        body = line[len("TEXT: "):]
+        text, _, latency_str = body.rpartition("\tLATENCY: ")
+        texts.append(text)
+        latencies.append(float(latency_str))
+    if len(texts) != len(audio_files):
+        print(f"  TheWhisper worker returned {len(texts)} results for "
+              f"{len(audio_files)} inputs (expected 1:1); skipping.",
+              file=sys.stderr)
+        return None
+    return texts, latencies
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--app", default="build/Murmur.app",
         help="Path to the built Murmur.app (default: build/Murmur.app)")
+    parser.add_argument(
+        "--thewhisper-python", default=".venv-thewhisper/bin/python",
+        help="Python interpreter with TheWhisper's deps installed "
+             "(default: .venv-thewhisper/bin/python). Skipped if missing.")
     args = parser.parse_args()
 
     binary = Path(args.app) / "Contents/MacOS/Murmur"
     if not binary.exists():
-        raise SystemExit(f"Binary not found at {binary} — run make_app.sh first")
+        print(f"Murmur binary not found at {binary} — run make_app.sh first. "
+              f"Skipping Murmur's own engines, still trying TheWhisper.",
+              file=sys.stderr)
 
     tmp_dir = Path("/tmp/murmur_benchmark")
     tmp_dir.mkdir(exist_ok=True)
@@ -104,41 +156,73 @@ def main():
         audio_files.append(f)
 
     rows = []
-    for engine, model in ENGINE_CONFIGS:
-        label = f"{engine}" + (f"/{model}" if model else "")
-        print(f"\n=== {label} ===")
+    if binary.exists():
+        for engine, model in ENGINE_CONFIGS:
+            label = f"{engine}" + (f"/{model}" if model else "")
+            print(f"\n=== {label} ===")
 
-        # Warm up first (may trigger a one-time model download) so the
-        # timed runs below measure steady-state speed, not a cold download
-        # that would otherwise skew whichever sentence happened to run first.
-        print("  warming up (downloads the model on first run)...")
-        cmd = [str(binary), "--transcribe", str(audio_files[0]), "--engine", engine]
-        if model:
-            cmd += ["--whisper-model", model]
-        subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            # Warm up first (may trigger a one-time model download) so the
+            # timed runs below measure steady-state speed, not a cold download
+            # that would otherwise skew whichever sentence happened to run first.
+            print("  warming up (downloads the model on first run)...")
+            cmd = [str(binary), "--transcribe", str(audio_files[0]), "--engine", engine]
+            if model:
+                cmd += ["--whisper-model", model]
+            subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
-        wers, latencies, rss_values = [], [], []
-        for sentence, audio_file in zip(TEST_SENTENCES, audio_files):
-            formatted, elapsed, peak_rss_mb = run_once(binary, audio_file, engine, model)
-            wer = word_error_rate(sentence, formatted)
-            wers.append(wer)
-            latencies.append(elapsed)
-            if peak_rss_mb is not None:
-                rss_values.append(peak_rss_mb)
-            print(f"  {elapsed:5.2f}s  WER {wer*100:5.1f}%  -> {formatted!r}")
-        rows.append({
-            "label": label,
-            "avg_wer": sum(wers) / len(wers) * 100,
-            "avg_latency": sum(latencies) / len(latencies),
-            "avg_rss_mb": sum(rss_values) / len(rss_values) if rss_values else None,
-        })
+            wers, latencies, rss_values = [], [], []
+            for sentence, audio_file in zip(TEST_SENTENCES, audio_files):
+                formatted, elapsed, peak_rss_mb = run_once(binary, audio_file, engine, model)
+                wer = word_error_rate(sentence, formatted)
+                wers.append(wer)
+                latencies.append(elapsed)
+                if peak_rss_mb is not None:
+                    rss_values.append(peak_rss_mb)
+                print(f"  {elapsed:5.2f}s  WER {wer*100:5.1f}%  -> {formatted!r}")
+            rows.append({
+                "label": label,
+                "avg_wer": sum(wers) / len(wers) * 100,
+                "avg_latency": sum(latencies) / len(latencies),
+                "avg_rss_mb": sum(rss_values) / len(rss_values) if rss_values else None,
+            })
 
-    print("\n" + "=" * 72)
-    print(f"{'Engine':<16}{'Avg WER':>10}{'Avg latency':>14}{'Avg peak RSS':>16}")
-    print("-" * 72)
+    thewhisper_python = Path(args.thewhisper_python)
+    label = "thewhisper/large-v3-turbo*"
+    print(f"\n=== {label} ===")
+    if not thewhisper_python.exists():
+        print(f"  no venv at {thewhisper_python} — skipping (see module "
+              f"docstring to set one up)")
+    else:
+        print("  loading (downloads the model on first run)...")
+        outcome = run_thewhisper(thewhisper_python, audio_files)
+        if outcome is None:
+            print("  skipped — see stderr above")
+        else:
+            texts, latencies = outcome
+            wers = [word_error_rate(s, t) for s, t in zip(TEST_SENTENCES, texts)]
+            for text, wer, elapsed in zip(texts, wers, latencies):
+                print(f"  {elapsed:5.2f}s  WER {wer*100:5.1f}%  -> {text!r}")
+            rows.append({
+                "label": label,
+                "avg_wer": sum(wers) / len(wers) * 100,
+                "avg_latency": sum(latencies) / len(latencies),
+                "avg_rss_mb": None,
+            })
+
+    if not rows:
+        raise SystemExit("Nothing ran — no Murmur binary and no TheWhisper venv.")
+
+    print("\n* thewhisper runs via plain `transformers` on CPU/MPS, not "
+          "CoreML/ANE through a Swift engine — its WER is comparable to the "
+          "rows above, its latency/RSS are not.")
+    width = max(16, max(len(row["label"]) for row in rows) + 2)
+    total = width + 40
+    print("\n" + "=" * total)
+    print(f"{'Engine':<{width}}{'Avg WER':>10}{'Avg latency':>14}{'Avg peak RSS':>16}")
+    print("-" * total)
     for row in rows:
         rss = f"{row['avg_rss_mb']:.0f} MB" if row["avg_rss_mb"] else "n/a"
-        print(f"{row['label']:<16}{row['avg_wer']:>9.1f}%{row['avg_latency']:>13.2f}s{rss:>16}")
+        print(f"{row['label']:<{width}}{row['avg_wer']:>9.1f}%{row['avg_latency']:>13.2f}s{rss:>16}")
 
 
 if __name__ == "__main__":
