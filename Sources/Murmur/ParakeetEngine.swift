@@ -12,24 +12,39 @@ import Foundation
 /// engines. Parakeet's transducer architecture has no decoder-prompt
 /// mechanism equivalent to Whisper's, so `biasTerms` can't nudge the main
 /// decode itself — instead this runs FluidAudio's separate CTC-based
-/// vocabulary-boosting pass (`SlidingWindowAsrManager` +
-/// `CustomVocabularyContext`; see `Documentation/ASR/CustomVocabulary.md` in
-/// the FluidAudio checkout) after the TDT decode: a second, small CTC
-/// encoder listens to the same audio for acoustic evidence of a bias term,
-/// and rescoring swaps in that term only where the evidence clears
-/// FluidAudio's own confidence thresholds. This is the mechanism
-/// prompt-based biasing could not be — testing this against
-/// `DeveloperVocabulary`'s "Supabase" case showed a Whisper prompt
+/// vocabulary-boosting pass (`CustomVocabularyContext`; see
+/// `Documentation/ASR/CustomVocabulary.md` in the FluidAudio checkout)
+/// after the decode: a second, small CTC encoder listens to the same audio
+/// for acoustic evidence of a bias term, and rescoring swaps in that term
+/// only where the evidence clears FluidAudio's own confidence thresholds.
+/// This is the mechanism prompt-based biasing could not be — testing this
+/// against `DeveloperVocabulary`'s "Supabase" case showed a Whisper prompt
 /// containing the term verbatim was still not enough on its own, because
 /// prompt biasing only ever nudges token probabilities; it never checks a
 /// candidate replacement against the actual audio the way CTC rescoring
 /// does.
 ///
+/// Boosted transcription runs on `UnifiedAsrManager` (FluidAudio's offline
+/// batch manager), not `SlidingWindowAsrManager` (its live-transcript one)
+/// — the latter was tried first and had a real, reproduced bug: its
+/// confirm/promote logic, needed to stabilize a *streaming* view, could
+/// inject spurious text at a chunk boundary on longer recordings once
+/// Murmur zeroed its confirmation thresholds (required to make rescoring
+/// apply to a short dictation at all). Filed upstream as
+/// github.com/FluidInference/FluidAudio/issues/912. `UnifiedAsrManager`'s
+/// overlap-merge (`collapseSeamWordDuplicates`) doesn't have this failure
+/// mode in testing, and needs no duration cap to avoid it — the real
+/// trade is that its model (`parakeet-unified-en-0.6b`) is English-only,
+/// so boosting is now gated on English dictation instead of on recording
+/// length. `v2`/`v3` above still handle the plain (non-boosted) decode for
+/// every other language exactly as before; this only changes what happens
+/// when boosting is requested.
+///
 /// Falls back to the plain one-shot decode (no boosting) whenever the
 /// caller doesn't request boosting (see `transcribe`'s `boostVocabulary`),
-/// the CTC model isn't downloaded/loaded yet, there are no bias terms, or
-/// the boosted path fails for any reason — boosting must never be the
-/// reason a dictation comes back empty.
+/// the dictation isn't English, the CTC model isn't downloaded/loaded yet,
+/// there are no bias terms, or the boosted path fails for any reason —
+/// boosting must never be the reason a dictation comes back empty.
 ///
 /// Model files are cached in FluidAudio's own default location
 /// (`~/Library/Application Support/FluidAudio/Models/`) rather than under
@@ -104,6 +119,13 @@ final class ParakeetEngine {
     private static let ctcVariant: CtcModelVariant = .ctc06b
     private var ctcLoadTask: Task<(models: CtcModels, tokenizer: CtcTokenizer), Error>?
 
+    /// The Unified offline model used for boosted transcription — a
+    /// separate ~0.6B model from the regular v2/v3 TDT ones, downloaded
+    /// and loaded once, independent of which TDT model is selected for
+    /// plain decoding. See the class doc comment for why boosting uses
+    /// this instead of the streaming sliding-window manager.
+    private var unifiedLoadTask: Task<UnifiedAsrManager, Error>?
+
     /// True once the pipeline is loaded in memory and can transcribe now.
     func isReady(model: String) -> Bool {
         readyModel == model
@@ -131,6 +153,7 @@ final class ParakeetEngine {
     func preload(model: String) {
         Task { _ = try? await self.asrModels(for: model) }
         Task { _ = try? await self.ctcResources() }
+        Task { _ = try? await self.unifiedManager() }
     }
 
     private func asrModels(for model: String) async throws -> AsrModels {
@@ -179,32 +202,59 @@ final class ParakeetEngine {
         return try await task.value
     }
 
-    /// `boostVocabulary` gates the CTC rescoring pass below, separately
-    /// from whether `biasTerms` happens to be non-empty. Measured cost:
-    /// ~0.65s for a plain decode vs. ~1.7s once boosting kicks in — nearly
-    /// 3x, and it used to trigger on *any* non-empty bias list, which in
-    /// practice was almost every dictation (even a handful of personal
-    /// dictionary entries is enough; developer vocabulary alone is ~110
-    /// terms). That's a bad trade for most dictations: the terms most
-    /// likely to actually collide acoustically with an ordinary word —
-    /// "Supabase," "Codex," "Claude" — are specifically the short,
-    /// English-word-shaped brand names in `DeveloperVocabulary`, not
-    /// generic personal vocabulary. So this now only boosts when the
-    /// caller says developer vocabulary is actually active for this app,
-    /// restoring the fast path for everyone else — including a user with
-    /// a large personal dictionary in a non-developer-context app, who
-    /// previously paid the same 3x tax for terms far less prone to this
-    /// specific failure mode.
-    /// The exact point past which FluidAudio's sliding window starts
-    /// splitting audio into multiple chunks (see `appendSamplesAndProcess`
-    /// in FluidAudio's `SlidingWindowAsrManager`: it only fires once
-    /// buffered audio reaches `chunk + right`). Under this, the whole
-    /// recording is always one window via `flushRemaining()` alone —
-    /// `transcribe`'s duration gate below relies on that to rule out the
-    /// multi-window seam bug entirely, not just make it less likely.
-    private static let slidingWindowChunkSeconds: Double = 11.0
-    private static let slidingWindowRightContextSeconds: Double = 2.0
+    /// Loads (downloading if needed) the Unified offline model used for
+    /// boosted transcription. Cached after the first success, same pattern
+    /// as `asrModels(for:)`/`ctcResources()` — the actor is safe to reuse
+    /// across calls since its batch `transcribe(_:)` entry point recomputes
+    /// everything from the passed audio each time (no carried decoder
+    /// state between calls, unlike its separate streaming-conformance API,
+    /// which this doesn't use).
+    ///
+    /// Tries the smaller/faster int8 encoder first; retries with fp16 on
+    /// failure, since some A-series chips can't build an execution plan
+    /// for the int8 variant on any compute unit even from an intact
+    /// download (FluidAudio issue #828, documented on
+    /// `UnifiedAsrManager.loadModels(from:)`).
+    private func unifiedManager() async throws -> UnifiedAsrManager {
+        if let unifiedLoadTask {
+            return try await unifiedLoadTask.value
+        }
+        let task = Task { () -> UnifiedAsrManager in
+            let manager = UnifiedAsrManager(encoderPrecision: .int8)
+            do {
+                try await manager.loadModels()
+                return manager
+            } catch {
+                dictationLog.error(
+                    "Unified int8 encoder failed to load, retrying fp16: \(error, privacy: .public)"
+                )
+                let fallback = UnifiedAsrManager(encoderPrecision: .fp16)
+                try await fallback.loadModels()
+                return fallback
+            }
+        }
+        unifiedLoadTask = task
+        return try await task.value
+    }
 
+    /// `boostVocabulary` gates the CTC rescoring pass below, separately
+    /// from whether `biasTerms` happens to be non-empty. Measured cost
+    /// when this ran on `SlidingWindowAsrManager`: ~0.65s for a plain
+    /// decode vs. ~1.7s once boosting kicked in — nearly 3x, and it used
+    /// to trigger on *any* non-empty bias list, which in practice was
+    /// almost every dictation (even a handful of personal dictionary
+    /// entries is enough; developer vocabulary alone is ~110 terms).
+    /// That's a bad trade for most dictations: the terms most likely to
+    /// actually collide acoustically with an ordinary word — "Supabase,"
+    /// "Codex," "Claude" — are specifically the short, English-word-shaped
+    /// brand names in `DeveloperVocabulary`, not generic personal
+    /// vocabulary. So this only boosts when the caller says developer
+    /// vocabulary is actually active for this app, restoring the fast
+    /// path for everyone else. `UnifiedAsrManager` (see the class doc
+    /// comment) adds its own gate on top: it's an English-only model, so
+    /// boosting now also requires `isEnglishDictation` — a non-English
+    /// dictation always uses the plain v2/v3 decode instead, same as if
+    /// boosting weren't requested at all.
     func transcribe(
         fileAt url: URL, model: String, localeID: String,
         biasTerms: [String], boostVocabulary: Bool) async throws -> String {
@@ -215,46 +265,17 @@ final class ParakeetEngine {
         // and pass unconditionally rather than branching on version here.
         let language = Language(rawValue:
             String(localeID.prefix(while: { $0 != "-" })).lowercased())
+        let isEnglishDictation =
+            String(localeID.prefix(while: { $0 != "-" })).lowercased() == "en"
 
         onStatus?("Transcribing (Parakeet)")
         defer { onStatus?(nil) }
 
-        // Boosting's own sliding-window decoder has a real, reproduced bug:
-        // FluidAudio's confirm/promote state machine that stitches multiple
-        // chunks together can inject spurious text at a chunk seam — found
-        // by testing a 15s, multi-sentence recording, where the boosted
-        // path inserted words never spoken, right at the chunk boundary,
-        // that the plain decode of the identical audio didn't have. Murmur
-        // zeroes FluidAudio's `minContextForConfirmation`/
-        // `confirmationThreshold` (see the doc comment below) so rescoring
-        // applies to short dictations at all, which likely reopens the
-        // instability those knobs exist to prevent. Rather than lose
-        // boosting's real, measured win for the common case — it correctly
-        // recovers "Supabase" where the plain decode mis-hears it as
-        // "Superbase" — this only attempts boosting when the recording is
-        // short enough that FluidAudio is structurally guaranteed to use a
-        // single window (see `slidingWindowChunkSeconds` above): no second
-        // chunk is ever built, so the seam this bug lives at can't occur.
-        // Longer dictations fall back to the plain decode instead of
-        // risking corrupted output — no boosting beats wrong boosting.
-        let isShortEnoughForSingleWindow: Bool
-        if let audioFile = try? AVAudioFile(forReading: url),
-           audioFile.fileFormat.sampleRate > 0 {
-            let seconds = Double(audioFile.length) / audioFile.fileFormat.sampleRate
-            isShortEnoughForSingleWindow =
-                seconds < Self.slidingWindowChunkSeconds + Self.slidingWindowRightContextSeconds
-        } else {
-            // Duration unreadable — can't prove single-window safety, so
-            // don't risk it.
-            isShortEnoughForSingleWindow = false
-        }
-
-        if boostVocabulary, isShortEnoughForSingleWindow, !biasTerms.isEmpty,
+        if boostVocabulary, isEnglishDictation, !biasTerms.isEmpty,
            let ctc = try? await ctcResources() {
             do {
-                return try await transcribeWithVocabularyBoosting(
-                    fileAt: url, asrModels: models, language: language,
-                    biasTerms: biasTerms, ctc: ctc)
+                return try await transcribeWithUnifiedVocabularyBoosting(
+                    fileAt: url, biasTerms: biasTerms, ctc: ctc)
             } catch {
                 dictationLog.error(
                     "Parakeet vocabulary boosting failed, falling back to plain decode: \(error, privacy: .public)"
@@ -273,30 +294,16 @@ final class ParakeetEngine {
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Runs the sliding-window decoder with CTC-based vocabulary rescoring
-    /// applied. `loadModels`/`configureVocabularyBoosting` here are cheap:
-    /// they wire up already-loaded CoreML model handles and re-read a small
-    /// cached tokenizer file, not a fresh download or model compile — the
-    /// real one-time costs (`asrModels(for:)`, `ctcResources()`) are cached
-    /// on `self` and shared across calls, so building a fresh
-    /// `SlidingWindowAsrManager` per dictation is the safe choice: no
-    /// actor-state (decoder state, sample buffers) can leak between one
-    /// dictation and the next.
-    ///
-    /// `minContextForConfirmation`/`confirmationThreshold` are zeroed out
-    /// below: both exist to stabilize a *live* transcript view (don't flip
-    /// displayed text until there's enough context/confidence to commit to
-    /// it), which doesn't apply here — Murmur only reads the final
-    /// `finish()` result, never an intermediate volatile/confirmed state.
-    /// Left at their real (10s / 0.85) defaults, most of Murmur's
-    /// dictations — a sentence or two, a few seconds — would never reach
-    /// "confirmed" at all, and vocabulary rescoring only ever runs on
-    /// confirmed text (see `SlidingWindowAsrManager.processWindow`):
-    /// silently disabling the whole feature for the common case. The
-    /// rescorer has its own independent confidence gates
-    /// (`CustomVocabularyContext.minCtcScore`/`minSimilarity`/
-    /// `minCombinedConfidence`) for whether to actually apply a
-    /// replacement, so nothing is lost by always attempting it.
+    /// Runs `UnifiedAsrManager`'s offline batch decode with CTC-based
+    /// vocabulary rescoring applied — one call, no manual chunking:
+    /// `transcribe(_:)` handles windowing and overlap-merge internally
+    /// (`collapseSeamWordDuplicates`), which is what avoids the seam bug
+    /// `SlidingWindowAsrManager` had (see the class doc comment).
+    /// `configureVocabularyBoosting` is cheap here — it wires up
+    /// already-loaded CoreML model handles, not a fresh download — and is
+    /// safe to call again on every transcription against the shared,
+    /// cached `unifiedManager()` instance: it just replaces which
+    /// vocabulary the next `transcribe(_:)` call rescores against.
     ///
     /// `minSimilarity: 0.85` is far stricter than FluidAudio's own default
     /// (0.52-0.60, size-tiered) — deliberately safe-by-default rather than
@@ -322,9 +329,9 @@ final class ParakeetEngine {
     /// and "Supervise" (0.56) measure at or below "database"'s own
     /// similarity to "Supabase", so admitting them would reopen that exact
     /// false positive.
-    private func transcribeWithVocabularyBoosting(
-        fileAt url: URL, asrModels: AsrModels, language: Language?,
-        biasTerms: [String], ctc: (models: CtcModels, tokenizer: CtcTokenizer)
+    private func transcribeWithUnifiedVocabularyBoosting(
+        fileAt url: URL, biasTerms: [String],
+        ctc: (models: CtcModels, tokenizer: CtcTokenizer)
     ) async throws -> String {
         let terms = biasTerms.compactMap { term -> CustomVocabularyTerm? in
             let ctcTokenIds = ctc.tokenizer.encode(term)
@@ -338,22 +345,9 @@ final class ParakeetEngine {
         }
         let vocabulary = CustomVocabularyContext(terms: terms, minSimilarity: 0.85)
 
-        // The same "proven" 11+2+2s window FluidAudio's own `.default`
-        // config uses (see `SlidingWindowAsrConfig.default`) — just with
-        // the two live-transcript-only knobs above zeroed out.
-        let config = SlidingWindowAsrConfig(
-            chunkSeconds: Self.slidingWindowChunkSeconds,
-            hypothesisChunkSeconds: 2.0,
-            leftContextSeconds: 2.0,
-            rightContextSeconds: Self.slidingWindowRightContextSeconds,
-            minContextForConfirmation: 0,
-            confirmationThreshold: 0,
-            language: language)
-        let streamingAsr = SlidingWindowAsrManager(config: config)
-        try await streamingAsr.configureVocabularyBoosting(
+        let unified = try await unifiedManager()
+        try await unified.configureVocabularyBoosting(
             vocabulary: vocabulary, ctcModels: ctc.models)
-        try await streamingAsr.loadModels(asrModels)
-        try await streamingAsr.startStreaming()
 
         let audioFile = try AVAudioFile(forReading: url)
         let format = audioFile.processingFormat
@@ -365,16 +359,7 @@ final class ParakeetEngine {
         }
         try audioFile.read(into: buffer)
 
-        // One call with the whole recording, not chunked: `streamAudio`
-        // only appends to an internal sample buffer that gets sliced into
-        // windows as they become available, so call granularity doesn't
-        // affect the result — confirmed by reading
-        // `SlidingWindowAsrManager.appendSamplesAndProcess`/
-        // `flushRemaining`. Dictation is already a complete recording by
-        // the time this runs, not a live stream, so there's no reason to
-        // split it up ourselves.
-        await streamingAsr.streamAudio(buffer)
-        let text = try await streamingAsr.finish()
+        let text = try await unified.transcribe(buffer)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

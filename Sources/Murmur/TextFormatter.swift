@@ -130,9 +130,21 @@ struct TextFormatter {
         // No space before closing punctuation.
         result = result.replacingOccurrences(
             of: " +([,.;:!?])", with: "$1", options: .regularExpression)
-        // Collapse duplicate punctuation like ",." or ".." left by edits.
+        // Collapse duplicate punctuation like ",." or ".." left by edits —
+        // but not ".," specifically: an abbreviation's period ("p.m.,")
+        // immediately followed by a real, separate comma starting the next
+        // clause is not a duplicate to clean up, and the old broader
+        // pattern (any of ,.;:!? followed by either , or .) silently
+        // deleted that comma. Found because it broke self-correction
+        // detection downstream: "5pm, no, actually 6pm" needs that comma
+        // to read as one corrected utterance rather than two sentences —
+        // collapsing it to "5pm. No, actually 6pm" made the correction
+        // pass in RewritePlan treat "No, actually..." as an unrelated new
+        // sentence and leave both halves in the output.
         result = result.replacingOccurrences(
-            of: "([,.;:!?])[,.]", with: "$1", options: .regularExpression)
+            of: ",\\.", with: ".", options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: "\\.{2,}", with: ".", options: .regularExpression)
         // Trim each line.
         result = result
             .components(separatedBy: "\n")
@@ -185,6 +197,10 @@ struct TextFormatter {
             ("  spaced   out   words ", "Spaced out words."),
             ("already punctuated!", "Already punctuated!"),
             ("", ""),
+            ("Let's meet at 5pm, no, actually let's do 6pm.",
+             "Let's meet at 5pm, no, actually let's do 6pm."),
+            ("Wait,. let me think", "Wait. Let me think."),
+            ("Sorry.. let me think", "Sorry. Let me think."),
             ("Let's meet Tuesday. Scratch that, Wednesday works better.",
              "Wednesday works better."),
             ("Testing testing, forget that. Let's start over with the real message.",
