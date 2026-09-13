@@ -250,28 +250,72 @@ enum AppProfileStore {
 // MARK: - Instruction composition
 
 enum RewritePlan {
+    /// Dedicated correction-resolution guidance, factored out of
+    /// `cleanupInstructions` so it reads as its own paragraph rather than
+    /// one word buried in a filler-removal list — tested standalone
+    /// first (a throwaway on-device probe using this exact wording) against
+    /// five real cases before landing here, including the one this
+    /// paragraph's own worked example exists for: an earlier, terser
+    /// version of this instruction (just the word "self-corrections" in
+    /// the list above) correctly left "I actually enjoyed the movie more
+    /// than I expected to" alone but failed to resolve "5pm, actually
+    /// 6pm" or a same-utterance restatement with no signal word at all
+    /// ("can we meet Tuesday — I'd rather meet Wednesday"). This fuller
+    /// version fixes both, verified against the same real dictation
+    /// pipeline (`Murmur --edit`), not just in isolation.
+    private static let correctionInstructions = """
+        The speaker sometimes verbally corrects themselves mid-dictation — \
+        restating a value, saying "actually," "no wait," or simply \
+        contradicting something they said moments earlier, with or without \
+        a signal word. When that happens, output ONLY the final, corrected \
+        version they meant: remove the parts they walked back, keep the \
+        parts they didn't — even if the correction replaces just one word \
+        or number in the middle of a sentence rather than a whole clause. \
+        Do not treat every instance of "actually" as a correction, though: \
+        if it's just a normal word in an otherwise consistent sentence — \
+        nothing before or after it is contradicted — leave the sentence \
+        exactly as dictated.
+
+        Example — dictated text "I actually enjoyed the movie more than I \
+        expected to": the correct output is that exact text, unchanged. \
+        "Actually" contradicts nothing said before it, so it stays.
+        """
+
     /// The baseline pass every non-Raw dictation gets when nothing else
     /// applies. `TextFormatter` already strips a fixed list of standalone
     /// filler tokens ("um", "uh", …) deterministically before this ever
     /// runs — this covers what regex can't: phrasal filler ("you know",
-    /// "like", "I mean"), false starts and self-corrections, stumbled or
-    /// repeated words, actual grammar, and rambling that needs restructuring
-    /// rather than just trimming. Previously "As spoken" meant *no* rewrite
-    /// pass ran at all; this is what makes it mean "cleaned up, same
-    /// register" instead — the gap between the deterministic formatter and
-    /// an explicit Style/Template.
+    /// "like", "I mean"), false starts, stumbled or repeated words, actual
+    /// grammar, and rambling that needs restructuring rather than just
+    /// trimming. Previously "As spoken" meant *no* rewrite pass ran at
+    /// all; this is what makes it mean "cleaned up, same register"
+    /// instead — the gap between the deterministic formatter and an
+    /// explicit Style/Template.
+    ///
+    /// Deliberately not extended to the template branches below —
+    /// `RewritePlan.instructions`'s own doc comment already explains why a
+    /// template's instructions stay the sole primary instruction, and this
+    /// codebase's self-test (`RewritePlan.instructions(template:style:.none)
+    /// == "STRUCTURE"`, exact equality) locks that in on purpose. Template
+    /// dictation still gets no correction-resolution as a result — a
+    /// narrower fix than "everywhere," left for a deliberate follow-up
+    /// rather than folded in here.
     private static let cleanupInstructions = """
         Clean up this dictated transcript: remove verbal filler and false \
-        starts ("you know", "like", "I mean", self-corrections, stumbled or \
-        repeated words), fix grammar and punctuation, and tighten rambling \
-        or run-on phrasing into clear, well-formed sentences. Preserve the \
-        speaker's meaning, facts, and intent exactly — do not add \
-        information that wasn't said, and do not change their tone unless \
-        instructed to below. This is light editing, not rewriting: keep the \
-        same paragraph breaks as the original (do not add new ones, and do \
-        not add quotation marks, headings, or any other formatting the \
-        speaker didn't ask for), and output a plain continuation of their \
-        sentences, never a description or restructuring of what they said.
+        starts ("you know", "like", "I mean", stumbled or repeated words), \
+        fix grammar and punctuation, and tighten rambling or run-on \
+        phrasing into clear, well-formed sentences.
+
+        \(correctionInstructions)
+
+        Preserve the speaker's meaning, facts, and intent exactly — do not \
+        add information that wasn't said, and do not change their tone \
+        unless instructed to below. This is light editing, not rewriting: \
+        keep the same paragraph breaks as the original (do not add new \
+        ones, and do not add quotation marks, headings, or any other \
+        formatting the speaker didn't ask for), and output a plain \
+        continuation of their sentences, never a description or \
+        restructuring of what they said.
         """
 
     /// Builds the single instruction string for a dictation's rewrite pass.

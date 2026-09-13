@@ -613,7 +613,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 do {
                     return try await parakeetEngine.transcribe(
                         fileAt: url, model: Settings.parakeetModel,
-                        localeID: Settings.localeIdentifier, biasTerms: biasTerms)
+                        localeID: Settings.localeIdentifier, biasTerms: biasTerms,
+                        boostVocabulary: developerVocabulary)
                 } catch {
                     lastError = "Parakeet engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."

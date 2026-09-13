@@ -122,13 +122,26 @@ struct MurmurMain {
 
         case .edit(let text):
             // Runs the exact same pipeline stopAndTranscribe() does for a
-            // default (no per-app override) dictation — real persisted
-            // Voice Profile included — rather than a synthetic instruction
+            // dictation into --bundle-id (default: no app, so the global
+            // default style/no per-app override) — real persisted Voice
+            // Profile included — rather than a synthetic instruction
             // string, so this reproduces field reports faithfully instead
             // of a simplified stand-in. --template opts into a specific
             // built-in/custom template instead of the no-template default,
             // to verify a template's own instructions (and worked example,
             // once one exists) rather than just the baseline cleanup pass.
+            //
+            // Style resolves through AppProfileStore exactly like the real
+            // pipeline (a bundle ID's own override, else Raw for a
+            // recognized terminal, else the global default) rather than
+            // hardcoding StyleSettings.defaultStyle — the gap between
+            // those two used to mean this command couldn't reproduce a
+            // Raw-style app at all, only ever exercising the non-Raw path.
+            let style = AppProfileStore.style(forBundleID: bundleID)
+            guard !style.skipsAllProcessing else {
+                print(text)
+                exit(0)
+            }
             let engine = RewriteEngine()
             if let note = engine.availabilityNote {
                 FileHandle.standardError.write(Data("Unavailable: \(note)\n".utf8))
@@ -139,7 +152,7 @@ struct MurmurMain {
                 NoteTemplateStore.all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
             }
             guard let instructions = RewritePlan.instructions(
-                template: template, style: StyleSettings.defaultStyle, voice: voice)
+                template: template, style: style, voice: voice)
             else {
                 print(text)
                 exit(0)
@@ -240,7 +253,8 @@ struct MurmurMain {
                         model: whisperModel,
                         localeID: localeIdentifier,
                         biasTerms: LearnedStore.biasTerms(
-                            includeDeveloperVocabulary: developerVocabulary))
+                            includeDeveloperVocabulary: developerVocabulary),
+                        boostVocabulary: developerVocabulary)
                 } else {
                     let transcriber = Transcriber(
                         locale: Locale(identifier: localeIdentifier))
@@ -358,10 +372,14 @@ struct MurmurMain {
           Murmur --transform "<text>" run a ⌥1/⌥2 Transform (Polish by default)
                                       [--transform-id promptEngineer] to pick
                                       a different one from Transform.all
-          Murmur --edit "<text>"      run the real default rewrite pass on a
-                                      string — actual persisted Voice Profile
-                                      and default style included, same as a
-                                      live dictation would use
+          Murmur --edit "<text>"      run the real rewrite pass on a string —
+                                      actual persisted Voice Profile included,
+                                      same as a live dictation would use
+                                      [--bundle-id ...] resolves style the
+                                      same way a real dictation into that
+                                      app would (default: global default
+                                      style); a Raw-style app prints the
+                                      text unchanged, same as live
                                       [--template "Meeting Notes"] to route
                                       through a specific template instead of
                                       the no-template default

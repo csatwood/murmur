@@ -182,6 +182,16 @@ enum DeveloperVocabulary {
     /// own `("super base", "Supabase")` entry is the other, independent
     /// safety net for this exact phrase if the acoustic floor still misses
     /// it in practice.
+    ///
+    /// Only reachable at all when `ParakeetEngine.transcribe`'s
+    /// `isShortEnoughForSingleWindow` gate passes: CTC rescoring is now
+    /// structurally limited to dictations short enough that FluidAudio's
+    /// `SlidingWindowAsrManager` can't construct a second window, after a
+    /// real seam-boundary corruption bug was found on longer, multi-window
+    /// audio. A dictation over that length gets the plain decode with no
+    /// rescoring at all — this threshold isn't exercised for it, and
+    /// `LearnedStore`'s exact-phrase/fuzzy corrections become the only
+    /// remaining safety net for a mis-hearing in that case.
     static let parakeetMinSimilarityOverrides: [String: Float] = [
         "Supabase": 0.68,
     ]
