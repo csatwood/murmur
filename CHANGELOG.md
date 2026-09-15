@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### New
+
+- **Notetaker**: on-device meeting notes. Detects an in-progress meeting via
+  your calendar or (optionally) your browser's active tab, captures mic +
+  system audio, transcribes and corrects it through the same Harper/
+  dictionary pipeline as regular dictation, and generates a title, summary,
+  decisions, and action items. Notes can be renamed, have action items
+  checked off, and copied as one formatted block. Hide-from-screen-capture,
+  auto-stop when the call ends, a configurable max recording length, and
+  its own rebindable hotkey (⌥M by default).
+- **Custom Transforms**: create your own ⌥-triggered rewrite shortcuts
+  alongside the built-in Polish (⌥1) and Prompt Engineer (⌥2) — up to seven
+  more, auto-assigned ⌥3–⌥9. A new card grid replaces the old plain list,
+  with "Reset to defaults" and an ⌥⇧Z to undo the last transform via the
+  target app's own ⌘Z.
+- **Cleanup levels** on the Style page (Light / Concise) — a second axis
+  alongside tone, for trimming wordiness independent of how formal the
+  rewrite sounds.
+- Snippets now track a per-snippet usage count, and the page leads with a
+  "try something like" example card teaching what a snippet can do,
+  including using one as a saved rewrite prompt.
+
+### Changed
+
+- Settings is now organized into collapsible accordion tiles (General,
+  Dictation, Notetaker, Privacy & Permissions), matching the Help page's
+  layout instead of one long scrolling list. The version/update status
+  only shows its orange highlight when an update is actually available.
+- The floating HUD dropped its live-transcript preview text — a different,
+  lower-quality model than whichever engine you've actually selected,
+  often late or wrong before the real transcript replaced it — down to a
+  simpler icon + waveform + status-label footer.
+
 ## v2.1.0 — 2026-09-10
 
 Dictation language support now actually works end-to-end — the language
