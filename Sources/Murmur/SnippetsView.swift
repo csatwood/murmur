@@ -31,8 +31,10 @@ struct SnippetsPage: View {
             ThinScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header
-                    tipBanner
+                    hero
                         .padding(.top, 18)
+                    tipBanner
+                        .padding(.top, 16)
                     searchBar
                         .padding(.top, 16)
                     listCard
@@ -65,6 +67,77 @@ struct SnippetsPage: View {
                 .foregroundStyle(Palette.warmInkFaint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Teaches by example rather than by the tip banner's one sentence
+    /// alone — a new user staring at an empty list has no real sense of
+    /// what's worth saving. Three deliberately different use cases, not
+    /// three variations on "an address": a link, a reusable AI-prompt
+    /// opener (the one genuinely non-obvious idea — a snippet doesn't have
+    /// to be a fact, it can be an instruction you say before dictating
+    /// into Ask Murmur or any other AI chat), and a boilerplate template.
+    /// Solid `sunset` fill, no shadow — same call as Scratchpad's own hero,
+    /// the closer sibling to this "explain a tool, then list what it's
+    /// made" page than Notetaker's own (which does carry a shadow).
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Say it once, never type it again")
+                .font(.manrope(19, .medium))
+                .tracking(-0.2)
+                .foregroundStyle(.white)
+            Text("Save an address, a canned reply, even a reusable AI prompt — say the "
+                 + "trigger phrase mid-dictation and Murmur drops in the full text.")
+                .font(.manrope(12.5))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 460, alignment: .leading)
+            // A real saved snippet's row (`SnippetRow`, below) uses this
+            // exact same chip-pair shape — without this label, nothing
+            // told the two apart, and these three read as if they were
+            // already active rather than illustrative. None of them do
+            // anything until you've actually created a snippet with that
+            // trigger yourself.
+            Text("TRY SOMETHING LIKE")
+                .font(.manrope(10, .bold))
+                .kerning(0.8)
+                .foregroundStyle(.white.opacity(0.6))
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 8) {
+                exampleRow(trigger: "my calendly", expansion: "https://calendly.com/yourname/30min")
+                exampleRow(trigger: "tighten this up",
+                           expansion: "Rewrite the following to be more concise and direct:")
+                exampleRow(trigger: "standup update",
+                           expansion: "Yesterday I worked on ___. Today: ___. No blockers.")
+            }
+            .padding(.top, 2)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.sunset, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func exampleRow(trigger: String, expansion: String) -> some View {
+        HStack(spacing: 8) {
+            Text(trigger)
+                .font(.manrope(11.5, .semibold))
+                .foregroundStyle(Palette.warmInk)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 7))
+            MurmurIconView(icon: .arrowRight)
+                .frame(width: 10, height: 10)
+                .foregroundStyle(.white.opacity(0.6))
+            Text(expansion)
+                .font(.manrope(11.5))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 7))
+                .frame(maxWidth: 320, alignment: .leading)
+        }
     }
 
     private var tipBanner: some View {
@@ -274,6 +347,16 @@ private struct SnippetRow: View {
                 .foregroundStyle(Palette.warmInk)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            // Always visible, not hover-only like the actions beside it —
+            // this is the one thing on the row that says whether a
+            // snippet is actually earning its keep, not just a control to
+            // reveal on demand.
+            if snippet.useCount > 0 {
+                Text("\(snippet.useCount) \(snippet.useCount == 1 ? "use" : "uses")")
+                    .font(.manrope(11))
+                    .foregroundStyle(Palette.warmInkFaint)
+                    .frame(width: 46, alignment: .trailing)
+            }
             HStack(spacing: 6) {
                 IconButton(icon: .edit, size: 22, iconSize: 12, help: "Edit", action: onEdit)
                 IconButton(icon: .trash, size: 22, iconSize: 12, help: "Delete", action: onDelete)

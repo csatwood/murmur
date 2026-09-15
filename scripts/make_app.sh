@@ -53,6 +53,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>Murmur records your voice while you hold the dictation key so it can transcribe it on-device.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Notetaker checks for an in-progress calendar event only to give a captured meeting note a real title — it never reads or changes your calendar otherwise.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>If you turn on browser meeting detection, Notetaker reads your active browser tab's URL only to check whether it looks like a meeting link — never your browsing history, and never sent anywhere.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Local build — no data leaves this Mac.</string>
 </dict>

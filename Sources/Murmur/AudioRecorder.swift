@@ -66,6 +66,15 @@ final class AudioRecorder {
     /// callback — no async work, no blocking.
     var onLiveBuffer: ((AVAudioPCMBuffer) -> Void)?
 
+    /// A second, independent live feed, for the HUD's live-transcript
+    /// preview — separate from `onLiveBuffer` because the two run on
+    /// different schedules (hands-free-with-auto-stop sessions only, vs.
+    /// every recording) and must never clobber each other by sharing one
+    /// slot the way a single property would. Same real-time contract as
+    /// `onLiveBuffer`: called synchronously from the tap callback, so
+    /// whatever's attached here must return immediately.
+    var onLivePreviewBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     static func requestMicrophoneAccess() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -140,6 +149,7 @@ final class AudioRecorder {
                 self.signalFrameCount += AVAudioFramePosition(buffer.frameLength)
             }
             self.onLiveBuffer?(buffer)
+            self.onLivePreviewBuffer?(buffer)
         }
 
         do {

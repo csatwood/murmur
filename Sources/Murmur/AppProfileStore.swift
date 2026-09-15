@@ -243,6 +243,22 @@ enum AppProfileStore {
               && voiced?.contains("Frequent pauses") == true,
               "voice profile summary + traits reach the instructions")
 
+        // Cleanup level: an explicit new axis, independent of tone/template,
+        // defaulting to today's unchanged behavior.
+        check(RewritePlan.instructions(template: nil, style: .none) ==
+              RewritePlan.instructions(template: nil, style: .none, cleanupLevel: .light),
+              "cleanupLevel defaults to .light, matching pre-existing behavior exactly")
+        let concise = RewritePlan.instructions(template: nil, style: .none, cleanupLevel: .concise)
+        check(concise?.contains("tighten this for concision") == true,
+              "concise cleanup level adds its own instructions")
+        check(RewritePlan.instructions(template: nil, style: .raw, cleanupLevel: .concise) == nil,
+              "Raw overrides concise cleanup the same way it overrides everything else")
+        let conciseWithTone = RewritePlan.instructions(
+            template: nil, style: .formal, cleanupLevel: .concise)
+        check(conciseWithTone?.contains("tighten this for concision") == true
+              && conciseWithTone?.contains(WritingStyle.formal.instructions ?? "\0") == true,
+              "concise composes with tone rather than replacing it")
+
         return passed
     }
 }
@@ -318,6 +334,19 @@ enum RewritePlan {
         restructuring of what they said.
         """
 
+    /// Layered on top of `base` below when `CleanupLevel.concise` is
+    /// chosen — deliberately permits what `cleanupInstructions`'s own
+    /// wording just above rules out (restructuring, shortening), rather
+    /// than replacing it outright, so a template's own structure or an
+    /// applied tone still governs everything concision doesn't touch.
+    private static let conciseInstructions = """
+        Also tighten this for concision: cut redundant phrasing, combine \
+        related sentences, and drop words that don't carry meaning. Unlike \
+        the instructions above, you may restructure sentences and shorten \
+        the overall result — just never invent information or drop a fact \
+        that was actually said.
+        """
+
     /// Builds the single instruction string for a dictation's rewrite pass.
     ///
     /// The old pipeline ran template *or* style and never both: if an app
@@ -342,12 +371,13 @@ enum RewritePlan {
     /// pass on its own — Raw is unaffected by it either way — it only
     /// colours a pass that was already going to happen.
     static func instructions(
-        template: NoteTemplate?, style: WritingStyle, voice: VoiceProfile? = nil
+        template: NoteTemplate?, style: WritingStyle, cleanupLevel: CleanupLevel = .light,
+        voice: VoiceProfile? = nil
     ) -> String? {
         guard !style.skipsAllProcessing else { return nil }
 
         let tone = style.instructions
-        let base: String
+        var base: String
         switch (template, tone) {
         case (nil, nil):
             base = cleanupInstructions
@@ -365,6 +395,14 @@ enum RewritePlan {
 
                 Additionally, apply this tone throughout, without changing \
                 the structure described above: \(tone)
+                """
+        }
+
+        if cleanupLevel == .concise {
+            base += """
+
+
+                \(conciseInstructions)
                 """
         }
 

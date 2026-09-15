@@ -312,7 +312,7 @@ enum MurmurIcon {
     case home, ask, insights, scratch, dict, profile, snip, style, tpl, trans
     case settings, help, search, trash, copy, edit, plus, check, refresh
     case lines, wave, calendar, arrowRight, caret, bell, mic, fingerprint
-    case wrench, lock, apps, sidebar, more
+    case wrench, lock, apps, sidebar, more, moreVertical, notetaker, clock
 
     var elements: [SVGPrimitive] {
         switch self {
@@ -437,6 +437,26 @@ enum MurmurIcon {
                 .circle(cx: 60, cy: 128, r: 12, filled: true),
                 .circle(cx: 128, cy: 128, r: 12, filled: true),
                 .circle(cx: 196, cy: 128, r: 12, filled: true),
+            ]
+        case .moreVertical:
+            return [
+                .circle(cx: 128, cy: 60, r: 12, filled: true),
+                .circle(cx: 128, cy: 128, r: 12, filled: true),
+                .circle(cx: 128, cy: 196, r: 12, filled: true),
+            ]
+        case .notetaker:
+            // A plain record glyph — ring + solid center dot — rather than
+            // reusing `.mic` (already means "dictation" everywhere else in
+            // this rail) or `.wave` (already Voice Profile's icon).
+            return [
+                .circle(cx: 128, cy: 128, r: 88, filled: false),
+                .circle(cx: 128, cy: 128, r: 40, filled: true),
+            ]
+        case .clock:
+            return [
+                .circle(cx: 128, cy: 128, r: 96, filled: false),
+                .line(x1: 128, y1: 128, x2: 128, y2: 72),
+                .line(x1: 128, y1: 128, x2: 172, y2: 152),
             ]
         case .sidebar:
             return [

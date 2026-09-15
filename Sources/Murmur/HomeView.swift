@@ -19,6 +19,15 @@ struct HomePage: View {
     @State private var editingEntry: HistoryEntry?
     @State private var editText = ""
     @State private var learnFeedback: String?
+    // Shared so opening a second row's overflow menu can't leave two open
+    // at once — each row only shows its own menu when this matches its own
+    // entry (see `HistoryRowView.isMenuOpen`).
+    @State private var openMenuEntryID: HistoryEntry.ID?
+
+    private var openMenuEntry: HistoryEntry? {
+        guard let id = openMenuEntryID else { return nil }
+        return app.entries.first { $0.id == id }
+    }
 
     var body: some View {
         GlassPanelPage {
@@ -29,6 +38,55 @@ struct HomePage: View {
             }
         }
         .sheet(item: $editingEntry) { entry in correctionSheet(entry) }
+        // Rendered here — above `historySection`'s own `ScrollView`, not
+        // nested inside it — so the menu is never a `LazyVStack` sibling
+        // of the rows below it. A same-row `.overlay` plus `.zIndex` (tried
+        // first) still lost to those rows in practice: `LazyVStack` only
+        // *sometimes* honored the raised index, likely the same known
+        // unreliability other SwiftUI/AppKit lazy-stack z-ordering reports
+        // describe — not something to keep fighting. `RowMenuAnchorKey` is
+        // the row's own action-icons bounds, reported only while its menu
+        // is open; resolving it against this `GeometryReader` gives a
+        // position independent of that row's place in the list, and of
+        // scroll offset.
+        .overlayPreferenceValue(RowMenuAnchorKey.self) { anchor in
+            if let anchor, let entry = openMenuEntry {
+                GeometryReader { proxy in
+                    let rect = proxy[anchor]
+                    // `RowActionsMenu` is a fixed 190×~84 card, so its
+                    // placement only needs that constant, not a measured
+                    // round-trip: right-aligned under the icon by default,
+                    // flipped upward when there isn't 84pt of headroom
+                    // below, and kept clear of the left/right edges.
+                    let menuWidth: CGFloat = 190
+                    let menuHeight: CGFloat = 84
+                    let opensUpward = rect.maxY + 6 + menuHeight > proxy.size.height
+                    let x = max(0, min(rect.maxX - menuWidth, proxy.size.width - menuWidth))
+                    let y = opensUpward ? rect.minY - 6 - menuHeight : rect.maxY + 6
+
+                    // An almost-invisible, page-filling tap catcher behind
+                    // the card: clicking anywhere outside the menu closes
+                    // it, while the opaque card in front always takes the
+                    // tap first wherever the two overlap.
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture { openMenuEntryID = nil }
+                    RowActionsMenu(
+                        onTemplate: {
+                            openMenuEntryID = nil
+                            app.pendingTemplateText = entry.text
+                            page = .templates
+                        },
+                        onDelete: {
+                            openMenuEntryID = nil
+                            app.deleteHistoryEntry(id: entry.id)
+                        },
+                        onDismiss: { openMenuEntryID = nil })
+                        .offset(x: x, y: y)
+                }
+            }
+        }
+        .animation(.murmurEase(0.14), value: openMenuEntryID)
     }
 
     // MARK: Capture zone
@@ -292,6 +350,7 @@ struct HomePage: View {
                             HistoryRowView(
                                 entry: entry,
                                 isNewest: entry.id == newestEntryID,
+                                openMenuEntryID: $openMenuEntryID,
                                 onCopy: {
                                     let pb = NSPasteboard.general
                                     pb.clearContents()
@@ -300,12 +359,7 @@ struct HomePage: View {
                                 onCorrect: {
                                     editText = entry.text
                                     editingEntry = entry
-                                },
-                                onTemplate: {
-                                    app.pendingTemplateText = entry.text
-                                    page = .templates
-                                },
-                                onDelete: { app.deleteHistoryEntry(id: entry.id) })
+                                })
                         }
                     }
                 }
@@ -476,12 +530,15 @@ private enum HistoryListRow: Identifiable {
 private struct HistoryRowView: View {
     let entry: HistoryEntry
     let isNewest: Bool
+    @Binding var openMenuEntryID: HistoryEntry.ID?
     let onCopy: () -> Void
     let onCorrect: () -> Void
-    let onTemplate: () -> Void
-    let onDelete: () -> Void
 
     @State private var hovering = false
+
+    /// Shared across rows (`openMenuEntryID` lives on `HomePage`) so
+    /// opening a second row's menu can't leave two open at once.
+    private var isMenuOpen: Bool { openMenuEntryID == entry.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -505,15 +562,28 @@ private struct HistoryRowView: View {
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 // Actions stay laid out and only fade, so hovering a row
-                // never reflows its text.
+                // never reflows its text. Copy and Correct & learn are the
+                // two used on almost every row, so they stay a single
+                // click away; Turn into a note and Delete move behind one
+                // overflow trigger, which also leaves room to append a
+                // future action without adding another permanent icon.
                 HStack(spacing: 6) {
                     IconButton(icon: .copy, help: "Copy", action: onCopy)
                     IconButton(icon: .edit, help: "Correct & learn", action: onCorrect)
-                    IconButton(icon: .tpl, help: "Turn into a note", action: onTemplate)
-                    IconButton(icon: .trash, help: "Delete", action: onDelete)
+                    IconButton(icon: .moreVertical, help: "More") {
+                        openMenuEntryID = isMenuOpen ? nil : entry.id
+                    }
                 }
-                .opacity(hovering ? 1 : 0)
+                .opacity((hovering || isMenuOpen) ? 1 : 0)
                 .animation(.easeOut(duration: 0.1), value: hovering)
+                // Reports this HStack's own bounds up to `HomePage`'s
+                // `overlayPreferenceValue(RowMenuAnchorKey.self)` whenever
+                // this row's menu is open, rather than drawing the menu
+                // here directly — see that overlay's own comment for why a
+                // same-row overlay isn't good enough inside a `LazyVStack`.
+                .anchorPreference(key: RowMenuAnchorKey.self, value: .bounds) {
+                    isMenuOpen ? $0 : nil
+                }
             }
             // No leading inset — the dot that used to want a little room
             // from the edge is gone, so the time column now sits flush
@@ -533,6 +603,75 @@ private struct HistoryRowView: View {
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
         }
+    }
+}
+
+/// Reports the open row's action-icons bounds up to `HomePage`, which
+/// resolves it against its own `GeometryReader` to place `RowActionsMenu`
+/// outside the scrolling list entirely. `reduce` just keeps whichever
+/// candidate is non-nil — `openMenuEntryID` already guarantees at most one
+/// row ever reports itself open at a time.
+private struct RowMenuAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The history row's overflow menu. Positioned by `HomePage`'s
+/// `overlayPreferenceValue` (see `RowMenuAnchorKey`) — this view itself
+/// knows nothing about where it ends up. Styled after the nav bar HUD's
+/// own popovers (`NavPopover`/`NavPopoverRow` in NavBarHUD.swift) — not a
+/// system `.popover` (generic native chrome, not the app's own design) —
+/// re-themed onto Home's white/warm palette, but flat rather than
+/// elevated: no shadow, matching this app's own standing rule that a
+/// glass-panel-page card never gets one (`HistoryRowView`'s own hover
+/// background is the same plain fill, no shadow, right next to this).
+/// A later action just becomes another `MenuRow` above the divider.
+private struct RowActionsMenu: View {
+    let onTemplate: () -> Void
+    let onDelete: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MenuRow(icon: .tpl, label: "Turn into a note", action: onTemplate)
+            Rectangle().fill(Palette.warmRowBorder).frame(height: 1).padding(.vertical, 5)
+            MenuRow(icon: .trash, label: "Delete", tint: Palette.danger, action: onDelete)
+        }
+        .padding(6)
+        .frame(width: 190)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Palette.warmRowBorder, lineWidth: 1))
+        .environment(\.colorScheme, .light)
+        .onExitCommand(perform: onDismiss)
+        .transition(.opacity.combined(with: .scale(0.96, anchor: .topTrailing)))
+    }
+}
+
+private struct MenuRow: View {
+    let icon: MurmurIcon
+    let label: String
+    var tint: Color = Palette.warmInk
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                MurmurIconView(icon: icon).frame(width: 13, height: 13)
+                Text(label).font(.manrope(12.5, .semibold)).lineLimit(1)
+                Spacer(minLength: 8)
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(hovering ? Palette.warmRowBorder : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

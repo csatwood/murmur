@@ -20,12 +20,41 @@ import SwiftUI
 
 struct SettingsPage: View {
     @ObservedObject var app: AppDelegate
+    // Separate `@ObservedObject`s for these two, rather than reading
+    // `app.notetaker.screenRecordingAuthorized`/`app.notetaker.detector
+    // .calendarAuthorized` straight through `app` — neither is `@Published`
+    // *on* `AppDelegate` itself, so a plain `@ObservedObject var app` alone
+    // doesn't resubscribe when either changes; this page's Calendar/Screen
+    // Recording rows would just go stale until some unrelated part of the
+    // page happened to re-render for a different reason.
+    @ObservedObject private var notetaker: NotetakerController
+    @ObservedObject private var meetingDetector: MeetingDetector
+
     @State private var supportedLocaleIDs: [String] = []
     @State private var handsFreeAutoStop = Settings.handsFreeAutoStop
     /// Which `AccentFieldSelect` (by its `id`) has its panel open, if any.
     /// Lifted up to the whole page rather than owned by each dropdown —
     /// see the panel-rendering `.overlayPreferenceValue` below for why.
     @State private var openDropdown: String?
+    /// Which tile (by its `tile(id:...)` index) is expanded — mutually
+    /// exclusive, same mechanism as `HelpPage.openTile`. All closed by
+    /// default, same as Help's own tiles.
+    @State private var openTile: Int?
+
+    @State private var notetakerLiveTranscriptEnabled = Settings.notetakerLiveTranscriptEnabled
+    @State private var notetakerHideFromScreenCapture = Settings.notetakerHideFromScreenCapture
+    @State private var notetakerAutoStopOnCallEnd = Settings.notetakerAutoStopOnCallEnd
+    @State private var notetakerMaxRecordingMinutes = Settings.notetakerMaxRecordingMinutes
+    @State private var browserMeetingDetectionEnabled = Settings.browserMeetingDetectionEnabled
+    @State private var notetakerHotkeyKeyCode = Settings.notetakerHotkeyKeyCode
+    @State private var notetakerHotkeyModifiers = Settings.notetakerHotkeyModifiers
+    @State private var showingNotetakerHotkeyEditor = false
+
+    init(app: AppDelegate) {
+        self.app = app
+        _notetaker = ObservedObject(wrappedValue: app.notetaker)
+        _meetingDetector = ObservedObject(wrappedValue: app.notetaker.detector)
+    }
 
     var body: some View {
         GlassPanelPage {
@@ -36,29 +65,17 @@ struct SettingsPage: View {
             ThinScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     header
-
-                    sectionHeader("Appearance").padding(.top, 22)
-                    appearanceSection
-
-                    sectionHeader("Permissions").padding(.top, 22)
-                    permissionsSection
-
-                    sectionHeader("Dictation").padding(.top, 22)
-                    dictationSection
-
-                    sectionHeader("Software").padding(.top, 22)
-                    softwareSection
+                    tiles.padding(.top, 18)
                 }
-                // Attached to the whole page, not to `dictationSection` or
-                // any individual trigger: an `.overlay` only ever paints
-                // above its *own* host view, and a later sibling declared
-                // outside that host (Software, or the next row down) still
-                // draws on top of it — which is exactly the bug where the
-                // Parakeet-model row's own white trigger rendered over the
-                // still-open Recognition-engine panel behind it. Anchoring
-                // here means the open panel always has every row on the
-                // page as an earlier sibling, so it wins regardless of
-                // which trigger opened it.
+                // Attached to the whole page, not to any individual tile or
+                // trigger: an `.overlay` only ever paints above its *own*
+                // host view, and a later sibling declared outside that host
+                // still draws on top of it — which is exactly the bug where
+                // the Parakeet-model row's own white trigger rendered over
+                // the still-open Recognition-engine panel behind it.
+                // Anchoring here means the open panel always has every row
+                // on the page as an earlier sibling, so it wins regardless
+                // of which trigger (in whichever tile) opened it.
                 .overlayPreferenceValue(DropdownAnchorKey.self) { anchors in
                     if let openDropdown, let anchor = anchors[openDropdown] {
                         DropdownPanel(
@@ -73,6 +90,99 @@ struct SettingsPage: View {
             }
         }
         .onAppear(perform: loadLocales)
+        .sheet(isPresented: $showingNotetakerHotkeyEditor, onDismiss: {
+            notetakerHotkeyKeyCode = Settings.notetakerHotkeyKeyCode
+            notetakerHotkeyModifiers = Settings.notetakerHotkeyModifiers
+        }) { NotetakerHotkeyEditor() }
+    }
+
+    // MARK: Tiles (category-level disclosure, mirrors HelpPage's own)
+
+    private var tiles: some View {
+        VStack(spacing: 12) {
+            tile(id: 0, icon: .settings, title: "General", summary: "Theme · Version \(appVersion)") {
+                appearanceSection
+                softwareSection
+            }
+            tile(
+                id: 1, icon: .mic, title: "Dictation",
+                summary: "Dictation key · Language · Recognition engine"
+            ) {
+                dictationSection
+            }
+            tile(
+                id: 2, icon: .notetaker, title: "Notetaker",
+                summary: "Live transcript · Auto-stop · Shortcut"
+            ) {
+                notetakerSection
+            }
+            tile(
+                id: 3, icon: .lock, title: "Privacy & Permissions",
+                summary: "Microphone · Accessibility · Calendar · Screen Recording"
+            ) {
+                privacyPermissionsSection
+            }
+        }
+    }
+
+    /// Hand-rolled rather than a `DisclosureGroup`, for the same reason
+    /// `HelpPage.tile` is — the label and body need different horizontal
+    /// padding, and a divider only once expanded, which `DisclosureGroup`'s
+    /// single content/label layout doesn't cleanly support.
+    private func tile<Content: View>(
+        id: Int, icon: MurmurIcon, title: String, summary: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isOpen = openTile == id
+        return VStack(spacing: 0) {
+            Button {
+                withAnimation(.murmurEase()) { openTile = isOpen ? nil : id }
+            } label: {
+                HStack(spacing: 16) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .fill(Palette.sunsetSoft)
+                        MurmurIconView(icon: icon)
+                            .frame(width: 24, height: 24)
+                            .foregroundStyle(Palette.sunsetDeep)
+                    }
+                    .frame(width: 52, height: 52)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title)
+                            .font(.manrope(17, .bold))
+                            .foregroundStyle(Palette.warmInk)
+                        Text(summary)
+                            .font(.manrope(12))
+                            .foregroundStyle(Palette.warmInkFaint)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 8)
+                    MurmurIconView(icon: .caret)
+                        .frame(width: 13, height: 13)
+                        .foregroundStyle(Palette.warmInkFainter)
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isOpen {
+                VStack(spacing: 0) { content() }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 4)
+                    .padding(.bottom, 4)
+                    .overlay(alignment: .top) {
+                        Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+                    }
+            }
+        }
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Palette.warmRowBorder, lineWidth: 1))
     }
 
     private var header: some View {
@@ -81,18 +191,11 @@ struct SettingsPage: View {
                 .font(.manrope(22, .medium))
                 .tracking(-0.33)
                 .foregroundStyle(Palette.warmInk)
-            Text("Appearance, permissions, dictation key, recognition engine.")
+            Text("Tap a category to open it — appearance, dictation, Notetaker, and privacy.")
                 .font(.manrope(12.5))
                 .foregroundStyle(Palette.warmInkFaint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.manrope(13, .semibold))
-            .foregroundStyle(Palette.warmInk)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// `.field-row` reskinned in warm tokens: a label/detail on the left, a
@@ -170,9 +273,9 @@ struct SettingsPage: View {
         }
     }
 
-    // MARK: Permissions
+    // MARK: Privacy & Permissions
 
-    private var permissionsSection: some View {
+    private var privacyPermissionsSection: some View {
         VStack(spacing: 0) {
             permissionRow(
                 granted: app.micAuthorized,
@@ -186,7 +289,7 @@ struct SettingsPage: View {
                 detail: "Required for the global hotkey and pasting. "
                     + "Relaunch Murmur after granting.",
                 pane: "Privacy_Accessibility",
-                isLast: app.axTrusted)
+                isLast: false)
             if !app.axTrusted {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Toggle on in System Settings but still red here? The saved grant "
@@ -204,6 +307,25 @@ struct SettingsPage: View {
                 }
                 .padding(.top, 10)
                 .padding(.bottom, 12)
+                Rectangle().fill(Palette.warmRowBorder).frame(height: 1)
+            }
+            requestPermissionRow(
+                granted: meetingDetector.calendarAuthorized,
+                title: "Calendar",
+                detail: "Gives Notetaker a meeting's real title and its attendees' names, "
+                    + "instead of \u{201c}Zoom, 2:14 PM.\u{201d}",
+                isLast: false
+            ) {
+                Task { await meetingDetector.requestCalendarAccess() }
+            }
+            requestPermissionRow(
+                granted: notetaker.screenRecordingAuthorized,
+                title: "Screen Recording",
+                detail: "Lets Notetaker hear the other side of a call through the meeting "
+                    + "app's own audio — it never records your screen.",
+                isLast: true
+            ) {
+                notetaker.requestScreenRecordingAccess()
             }
         }
     }
@@ -225,6 +347,29 @@ struct SettingsPage: View {
                     NSWorkspace.shared.open(url)
                 }
                 .buttonStyle(WarmGhostButtonStyle())
+            }
+        }
+    }
+
+    /// Same shape as `permissionRow`, but the grant flow is an in-app
+    /// request (`EKEventStore`/`CGRequestScreenCaptureAccess`) rather than
+    /// a System Settings deep link — Calendar and Screen Recording are both
+    /// requested in-app elsewhere already (Notetaker's own page), so this
+    /// reuses that same flow instead of sending the user to System Settings
+    /// for something Murmur can just ask for directly.
+    private func requestPermissionRow(
+        granted: Bool, title: String, detail: String, isLast: Bool, action: @escaping () -> Void
+    ) -> some View {
+        fieldRow(label: title, detail: detail, isLast: isLast) {
+            if granted {
+                HStack(spacing: 6) {
+                    MurmurIconView(icon: .check).frame(width: 13, height: 13)
+                    Text("Granted").font(.manrope(12, .semibold))
+                }
+                .foregroundStyle(Palette.sunsetDeep)
+            } else {
+                Button("Connect", action: action)
+                    .buttonStyle(WarmGhostButtonStyle())
             }
         }
     }
@@ -318,6 +463,7 @@ struct SettingsPage: View {
         case "whisperCppModel": return WhisperCppEngine.availableModels.map(\.id)
         case "parakeetModel": return ParakeetEngine.availableModels.map(\.id)
         case "language": return pickerLocaleIDs
+        case "notetakerMaxLength": return ["30", "60", "120", "240", "0"]
         default: return []
         }
     }
@@ -335,6 +481,16 @@ struct SettingsPage: View {
             return { m in ParakeetEngine.availableModels.first { $0.id == m }?.label ?? m }
         case "language":
             return { id in Locale.current.localizedString(forIdentifier: id) ?? id }
+        case "notetakerMaxLength":
+            return { raw in
+                switch raw {
+                case "30": return "30 minutes"
+                case "60": return "1 hour"
+                case "120": return "2 hours"
+                case "240": return "4 hours"
+                default: return "No limit"
+                }
+            }
         default: return { $0 }
         }
     }
@@ -351,6 +507,14 @@ struct SettingsPage: View {
             return Binding(get: { app.whisperCppModel }, set: { app.setWhisperCppModel($0) })
         case "parakeetModel": return Binding(get: { app.parakeetModel }, set: { app.setParakeetModel($0) })
         case "language": return Binding(get: { app.localeID }, set: { app.setLocale($0) })
+        case "notetakerMaxLength":
+            return Binding(
+                get: { String(notetakerMaxRecordingMinutes) },
+                set: { raw in
+                    guard let minutes = Int(raw) else { return }
+                    notetakerMaxRecordingMinutes = minutes
+                    Settings.notetakerMaxRecordingMinutes = minutes
+                })
         default: return .constant("")
         }
     }
@@ -417,11 +581,133 @@ struct SettingsPage: View {
         return "Downloading in the background. Apple engine covers dictations until it's ready."
     }
 
+    // MARK: Notetaker
+
+    private var notetakerSection: some View {
+        VStack(spacing: 0) {
+            fieldRow(
+                label: "Show live transcript",
+                detail: "Rough captions from both sides of the call while it's still running "
+                    + "— the real, diarized transcript is only written once you stop."
+            ) {
+                WarmToggle(isOn: $notetakerLiveTranscriptEnabled)
+                    .onChange(of: notetakerLiveTranscriptEnabled) { _, newValue in
+                        Settings.notetakerLiveTranscriptEnabled = newValue
+                    }
+            }
+            fieldRow(
+                label: "Don't show Notetaker in screen capture",
+                detail: "Keeps Murmur's own window out of anything you screen-record or "
+                    + "share while capturing a meeting."
+            ) {
+                WarmToggle(isOn: $notetakerHideFromScreenCapture)
+                    .onChange(of: notetakerHideFromScreenCapture) { _, newValue in
+                        Settings.notetakerHideFromScreenCapture = newValue
+                    }
+            }
+            fieldRow(
+                label: "Stop automatically when the call ends",
+                detail: "Ends the capture on its own once the meeting app closes."
+            ) {
+                WarmToggle(isOn: $notetakerAutoStopOnCallEnd)
+                    .onChange(of: notetakerAutoStopOnCallEnd) { _, newValue in
+                        Settings.notetakerAutoStopOnCallEnd = newValue
+                    }
+            }
+            fieldRow(
+                label: "Maximum recording length",
+                detail: "Stops automatically at this length."
+            ) {
+                AccentFieldSelect(
+                    id: "notetakerMaxLength",
+                    label: dropdownLabel(for: "notetakerMaxLength")(String(notetakerMaxRecordingMinutes)),
+                    openID: $openDropdown)
+            }
+            fieldRow(
+                label: "Also detect meetings in your browser",
+                detail: "Chrome, Safari, Edge, Arc, Brave. Reads only the active tab's URL "
+                    + "to check for a meeting link — never your browsing history."
+            ) {
+                WarmToggle(isOn: $browserMeetingDetectionEnabled)
+                    .onChange(of: browserMeetingDetectionEnabled) { _, newValue in
+                        Settings.browserMeetingDetectionEnabled = newValue
+                    }
+            }
+            fieldRow(
+                label: "Keyboard shortcut",
+                detail: "Starts or stops capturing the current call, from anywhere.",
+                isLast: true
+            ) {
+                Button { showingNotetakerHotkeyEditor = true } label: {
+                    HStack(spacing: 6) {
+                        ForEach(KeyComboLabel.symbols(for: notetakerHotkeyModifiers), id: \.self) { symbol in
+                            notetakerKeycap(symbol)
+                        }
+                        notetakerKeycap(KeyComboLabel.keyName(for: notetakerHotkeyKeyCode))
+                        MurmurIconView(icon: .edit)
+                            .frame(width: 10, height: 10)
+                            .foregroundStyle(Palette.warmInkFaint)
+                            .padding(.leading, 2)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func notetakerKeycap(_ label: String) -> some View {
+        Text(label)
+            .font(.manrope(11, .semibold))
+            .foregroundStyle(Palette.warmInk)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Palette.warmRowBorder, in: RoundedRectangle(cornerRadius: 5))
+    }
+
     // MARK: Software
 
+    /// Real status, not decoration — `app.availableUpdate` is the same
+    /// published property that drives `SoftwareUpdateView`'s own sheet
+    /// (`AppShellRoot`'s `.sheet(item: $app.availableUpdate)`), which
+    /// already shows itself automatically the moment `checkForUpdates()`
+    /// finds a newer release. By the time anyone is looking at this row,
+    /// that's almost always already resolved one way or the other, so this
+    /// just reflects the same state rather than checking again.
     private var softwareSection: some View {
         fieldRow(label: "Murmur", detail: "Version \(appVersion)", isLast: true) {
-            EmptyView()
+            if app.availableUpdate == nil {
+                // Quiet, not a badge — the normal state deserves no more
+                // visual weight than a permission that's already
+                // `Granted` gets (`permissionRow`'s own identical
+                // treatment just below, in the Privacy tile): a check and
+                // some text, no fill. Reserving the filled orange pill for
+                // "Update available" is what actually makes that state
+                // read as worth noticing.
+                HStack(spacing: 6) {
+                    MurmurIconView(icon: .check).frame(width: 13, height: 13)
+                    Text("Up to date").font(.manrope(12, .semibold))
+                }
+                .foregroundStyle(Palette.sunsetDeep)
+            } else {
+                // Same outer-capsule treatment as the Theme picker just
+                // above — a white capsule with a `warmRowBorder` stroke
+                // and 2pt inset around the filled inner pill — so this
+                // reads as belonging to the same control family, not a
+                // one-off badge, precisely because it's the state that
+                // should draw the eye the way a selected theme option does.
+                HStack(spacing: 0) {
+                    Text("Update available")
+                        .font(.manrope(12, .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(Palette.sunset))
+                }
+                .padding(2)
+                .background(Color.white, in: Capsule())
+                .overlay(Capsule().stroke(Palette.warmRowBorder, lineWidth: 1))
+                .fixedSize()
+            }
         }
     }
 
@@ -732,6 +1018,20 @@ private struct AccentFieldSelectList: View {
         // of the page instead of hugging its content.
         .frame(minWidth: 220, maxWidth: 320)
         .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // Every other white card on this page (the tiles themselves) gets
+        // a border — this floating panel didn't, which was invisible on
+        // its own but broke down the moment Settings grew tall enough for
+        // a panel to open directly over another white tile card behind
+        // it: same fill, no shadow (kept — see this type's own header),
+        // and now no border either meant literally nothing drawn marked
+        // where one surface ended and the other began. `warmDivider`, not
+        // `warmRowBorder` — the latter is tuned to nearly vanish against
+        // white by design (it's a *fill* for chips sitting on the glass
+        // panel elsewhere), which is exactly the problem here; this needs
+        // to actually read as an edge.
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Palette.warmDivider, lineWidth: 1))
         .environment(\.colorScheme, .light)
     }
 

@@ -204,6 +204,30 @@ enum WritingStyle: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How aggressively the rewrite pass may touch a dictation's actual
+/// wording and length — independent of `WritingStyle`'s tone, the same
+/// separation Wispr Flow's own Style page draws between its per-context
+/// tone tabs and its single global "Auto Cleanup" control. `.light` is
+/// today's existing baseline (`RewritePlan`'s own `cleanupInstructions`)
+/// unchanged: fix grammar/filler, preserve wording and length. `.concise`
+/// is new: actively tightens phrasing and may shorten the result, the gap
+/// Murmur had no equivalent for — Formal/Casual/Very casual all
+/// deliberately preserve "approximate length," none of them compress.
+/// Has no effect on `WritingStyle.raw`, which already skips the rewrite
+/// pass entirely regardless of this setting.
+enum CleanupLevel: String, Codable, CaseIterable, Identifiable {
+    case light, concise
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .light: return "Light"
+        case .concise: return "Concise"
+        }
+    }
+}
+
 /// The global default tone. Per-app overrides live in `AppProfileStore`,
 /// alongside that app's template — see `AppProfile`.
 enum StyleSettings {
@@ -215,6 +239,17 @@ enum StyleSettings {
                 ?? .none
         }
         set { defaults.set(newValue.rawValue, forKey: "styleDefault") }
+    }
+
+    /// Global only, not per-app — matching Wispr Flow's own Auto Cleanup,
+    /// which applies "across all apps" rather than joining the per-app
+    /// tone override `AppProfileStore` already supports.
+    static var defaultCleanupLevel: CleanupLevel {
+        get {
+            CleanupLevel(rawValue: defaults.string(forKey: "cleanupLevelDefault") ?? "")
+                ?? .light
+        }
+        set { defaults.set(newValue.rawValue, forKey: "cleanupLevelDefault") }
     }
 }
 

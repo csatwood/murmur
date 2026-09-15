@@ -13,13 +13,28 @@ struct StylePage: View {
     @ObservedObject var app: AppDelegate
     @Binding var page: Page
     @State private var defaultStyle: WritingStyle = StyleSettings.defaultStyle
+    /// Independent of `defaultStyle` — how much Murmur may shorten or
+    /// restructure, not what register it writes in. Global only, matching
+    /// `StyleSettings.defaultCleanupLevel`'s own doc comment on why this
+    /// doesn't join `AppProfileStore`'s per-app overrides.
+    @State private var defaultCleanupLevel: CleanupLevel = StyleSettings.defaultCleanupLevel
 
     /// The one sample sentence every tone is previewed against, so the
     /// differences between them are directly comparable.
     private let sourceText =
         "um so i think we should send them the updated file when you get a chance"
 
-    private func preview(for style: WritingStyle) -> String {
+    private func preview(for style: WritingStyle, cleanupLevel: CleanupLevel) -> String {
+        guard style != .raw else { return sourceText }
+        if cleanupLevel == .concise {
+            switch style {
+            case .none: return "Send the updated file when you get a chance."
+            case .casual: return "Send the file whenever you get a chance."
+            case .formal: return "Please send the updated file at your convenience."
+            case .veryCasual: return "Send it whenever!"
+            case .raw: return sourceText
+            }
+        }
         switch style {
         case .none:
             return "So I think we should send them the updated file when you get a chance."
@@ -51,12 +66,16 @@ struct StylePage: View {
                     segmentedPicker
                         .padding(.top, 16)
 
+                    cleanupPicker
+                        .padding(.top, 14)
+
                     sampleCard
                         .padding(.top, 16)
 
                     if defaultStyle == .raw {
                         tipBanner("Raw skips all cleanup — no capitalization, punctuation, "
-                                  + "spoken commands, or rewriting. Best for terminals and code editors.")
+                                  + "spoken commands, or rewriting, including the Cleanup level "
+                                  + "above. Best for terminals and code editors.")
                             .padding(.top, 12)
                     }
 
@@ -133,6 +152,55 @@ struct StylePage: View {
         .fixedSize()
     }
 
+    /// Independent of, and visually secondary to, `segmentedPicker` above
+    /// — smaller label, same pill-in-pill control shape so the two clearly
+    /// belong to the same page without reading as equally weighted
+    /// choices. Disabled (not hidden — Raw's own tip banner below already
+    /// says why) when Raw is selected, since Raw skips the rewrite pass
+    /// this setting only ever affects.
+    private var cleanupPicker: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Cleanup")
+                    .font(.manrope(12.5, .semibold))
+                    .foregroundStyle(Palette.warmInk)
+                Text("How much Murmur may shorten or restructure, on top of tone. Applies "
+                     + "everywhere, like tone.")
+                    .font(.manrope(11))
+                    .foregroundStyle(Palette.warmInkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            HStack(spacing: 2) {
+                ForEach(CleanupLevel.allCases) { level in
+                    Button {
+                        defaultCleanupLevel = level
+                        StyleSettings.defaultCleanupLevel = level
+                    } label: {
+                        Text(level.displayName)
+                            .font(.manrope(12, level == defaultCleanupLevel ? .semibold : .regular))
+                            .foregroundStyle(level == defaultCleanupLevel ? .white : Palette.warmInkSoft)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 6)
+                            .background {
+                                if level == defaultCleanupLevel {
+                                    Capsule().fill(Palette.sunset)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(2)
+            .background(Color.white, in: Capsule())
+            .overlay(Capsule().stroke(Palette.warmRowBorder, lineWidth: 1))
+            .fixedSize()
+            .opacity(defaultStyle == .raw ? 0.4 : 1)
+            .allowsHitTesting(defaultStyle != .raw)
+        }
+        .padding(.horizontal, 4)
+    }
+
     private var sampleCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("SAMPLE, UNPROCESSED")
@@ -146,11 +214,13 @@ struct StylePage: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
             Rectangle().fill(Palette.warmRowBorder).frame(height: 1).padding(.vertical, 14)
-            Text("PREVIEW — \(defaultStyle.displayName.uppercased())")
+            Text(defaultStyle == .raw
+                 ? "PREVIEW — \(defaultStyle.displayName.uppercased())"
+                 : "PREVIEW — \(defaultStyle.displayName.uppercased()), \(defaultCleanupLevel.displayName.uppercased())")
                 .font(.manrope(11, .medium))
                 .kerning(0.7)
                 .foregroundStyle(Palette.warmInkFaint)
-            Text(preview(for: defaultStyle))
+            Text(preview(for: defaultStyle, cleanupLevel: defaultCleanupLevel))
                 .font(.manrope(14))
                 .foregroundStyle(Palette.warmInk)
                 .fixedSize(horizontal: false, vertical: true)

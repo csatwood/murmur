@@ -14,6 +14,7 @@ struct MurmurMain {
         var templateName: String?
         var transformID: String?
         var bundleID: String?
+        var ctcVariant: String?
 
         while let argument = arguments.next() {
             switch argument {
@@ -57,6 +58,8 @@ struct MurmurMain {
                 localeIdentifier = arguments.next() ?? localeIdentifier
             case "--bundle-id":
                 bundleID = arguments.next() ?? bundleID
+            case "--ctc-variant":
+                ctcVariant = arguments.next() ?? ctcVariant
             case "--help", "-h":
                 usageAndExit()
             default:
@@ -74,9 +77,10 @@ struct MurmurMain {
             let audioPassed = AudioRecorder.runSelfTest()
             let hallucinationPassed = HallucinationFilter.runSelfTest()
             let developerVocabPassed = DeveloperVocabulary.runSelfTest()
+            let transformsPassed = Transform.runSelfTest()
             exit(formatterPassed && learnedPassed && templatesPassed && askPassed
                  && profilesPassed && audioPassed && hallucinationPassed
-                 && developerVocabPassed ? 0 : 1)
+                 && developerVocabPassed && transformsPassed ? 0 : 1)
 
         case .format(let text):
             // Same pipeline as live dictation: format, apply learned
@@ -152,7 +156,8 @@ struct MurmurMain {
                 NoteTemplateStore.all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
             }
             guard let instructions = RewritePlan.instructions(
-                template: template, style: style, voice: voice)
+                template: template, style: style,
+                cleanupLevel: StyleSettings.defaultCleanupLevel, voice: voice)
             else {
                 print(text)
                 exit(0)
@@ -177,8 +182,8 @@ struct MurmurMain {
             let history = HistoryStore()
             do {
                 let answer = try await AskMurmur.ask(
-                    question, history: history.entries, engine: engine)
-                print(answer)
+                    question, history: history.entries, meetings: MeetingNoteStore().notes, engine: engine)
+                print(answer.text)
                 exit(0)
             } catch {
                 FileHandle.standardError.write(Data("Failed: \(error)\n".utf8))

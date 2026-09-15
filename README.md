@@ -6,10 +6,7 @@ Hold `fn`, speak, release — clean text appears at your cursor in any app.
 No cloud, no subscription, no word limits. Your audio and transcripts never
 leave your Mac.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="Resources/screenshot-dark.png">
-  <img src="Resources/screenshot.png" alt="Murmur dashboard">
-</picture>
+<img src="Resources/screenshot.jpg" alt="Murmur dashboard">
 
 Murmur is an open-source, fully local take on the modern AI dictation app
 (in the spirit of Wispr Flow), built natively in Swift on Apple's on-device
@@ -60,6 +57,27 @@ speech and language models, with an optional local Whisper engine.
   locally from what you dictate, scratchpad.
 - **Guided first run** — welcome → permissions → recognition engine →
   hotkey → mic test, shown once.
+
+## Screenshots
+
+<table>
+<tr>
+  <td width="50%"><img src="Resources/screenshot-insights.jpg" alt="Insights"><br><sub>Insights</sub></td>
+  <td width="50%"><img src="Resources/screenshot-ask.jpg" alt="Ask Murmur"><br><sub>Ask Murmur</sub></td>
+</tr>
+<tr>
+  <td width="50%"><img src="Resources/screenshot-notetaker.jpg" alt="Notetaker"><br><sub>Notetaker</sub></td>
+  <td width="50%"><img src="Resources/screenshot-voice-profile.jpg" alt="Voice Profile"><br><sub>Voice Profile</sub></td>
+</tr>
+<tr>
+  <td width="50%"><img src="Resources/screenshot-style.jpg" alt="Style"><br><sub>Style</sub></td>
+  <td width="50%"><img src="Resources/screenshot-snippets.jpg" alt="Snippets"><br><sub>Snippets</sub></td>
+</tr>
+<tr>
+  <td width="50%"><img src="Resources/screenshot-settings.jpg" alt="Settings"><br><sub>Settings</sub></td>
+  <td width="50%"></td>
+</tr>
+</table>
 
 ## Requirements
 

@@ -28,7 +28,7 @@ enum PageGroup: CaseIterable {
 
     var items: [Page] {
         switch self {
-        case .capture: return [.home, .insights, .ask, .scratchpad]
+        case .capture: return [.home, .insights, .ask, .notetaker, .scratchpad]
         case .teach: return [.dictionary, .training, .style, .appProfiles]
         case .shape: return [.snippets, .templates, .transforms]
         }
@@ -45,6 +45,7 @@ extension Page {
     /// than being a document inside the shell's own ScrollView.
     var managesOwnScrolling: Bool {
         self == .ask || self == .home || self == .insights || self == .scratchpad
+            || self == .notetaker
             || self == .dictionary || self == .training || self == .style
             || self == .appProfiles || self == .snippets || self == .templates
             || self == .transforms || self == .settings || self == .help || self == .legal
@@ -55,6 +56,7 @@ extension Page {
         case .home: return .home
         case .insights: return .insights
         case .ask: return .ask
+        case .notetaker: return .notetaker
         case .dictionary: return .dict
         case .training: return .profile
         case .snippets: return .snip
@@ -537,7 +539,7 @@ struct AppShellRoot: View {
     /// instead of taking the generic inset here. Extend this list as more
     /// pages adopt `GlassPanelPage`.
     private static let glassPanelPages: Set<Page> = [
-        .home, .insights, .scratchpad, .ask, .dictionary, .training, .style,
+        .home, .insights, .scratchpad, .ask, .notetaker, .dictionary, .training, .style,
         .appProfiles, .snippets, .templates, .transforms, .settings, .help, .legal,
     ]
 
@@ -599,6 +601,7 @@ struct AppShellRoot: View {
         case .home: HomePage(app: app, page: pageBinding)
         case .insights: InsightsPage(app: app)
         case .ask: AskPage(app: app)
+        case .notetaker: NotetakerPage(app: app)
         case .dictionary: DictionaryPage(page: pageBinding)
         case .training: TrainingPage(app: app, page: pageBinding)
         case .snippets: SnippetsPage(page: pageBinding)
@@ -606,7 +609,7 @@ struct AppShellRoot: View {
         case .transforms: TransformsPage(app: app, page: pageBinding)
         case .templates: TemplatesPage(app: app, page: pageBinding)
         case .appProfiles: AppProfilesPage(app: app, page: pageBinding)
-        case .scratchpad: ScratchpadPage(page: pageBinding)
+        case .scratchpad: ScratchpadPage(app: app)
         case .settings: SettingsPage(app: app)
         case .help: HelpPage(app: app, page: pageBinding)
         case .legal: LegalPage()

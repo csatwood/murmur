@@ -193,6 +193,34 @@ enum DeveloperVocabulary {
         "Supabase": 0.68,
     ]
 
+    /// Known mis-hearing spellings per term, for FluidAudio's own
+    /// `CustomVocabularyTerm.aliases` — derived from `corrections` above
+    /// rather than duplicated, so there's one list of "known variants of
+    /// Supabase" feeding both the deterministic post-hoc correction and
+    /// this acoustic-stage one, not two that can drift apart.
+    ///
+    /// This is a materially different mechanism from
+    /// `parakeetMinSimilarityOverrides`, not a restatement of it: an alias
+    /// is its own comparison target inside FluidAudio's rescorer (see
+    /// `VocabularyRescorer+Utilities.buildNormalizedForms`), scored against
+    /// the decoded span directly, rather than requiring the span to be
+    /// textually close to the canonical term itself. That's what lets it
+    /// reach mis-hearings the similarity override can't: "super bass"
+    /// measures only 0.60 against "Supabase" (below "database"'s own 0.63,
+    /// so no shared threshold can safely admit it that way — see the
+    /// override's own doc comment) — but registered as an alias, the
+    /// rescorer compares the decoded span against "super bass" itself, a
+    /// near-exact match, independent of how far that string sits from
+    /// "Supabase". Confirmed against altic-dev/FluidVoice (a comparable
+    /// open-source dictation app) actually shipping this exact mechanism
+    /// for their own vocabulary boosting, not just a theoretical reading
+    /// of FluidAudio's API — see
+    /// [[project_murmur_fluidvoice_competitor_research]].
+    static var parakeetAliases: [String: [String]] {
+        Dictionary(grouping: corrections, by: \.intended)
+            .mapValues { $0.map(\.heard) }
+    }
+
     /// Terms `LearnedStore.apply(in:includeDeveloperVocabulary:)` fuzzy-
     /// matches against arbitrary decoded text (`fuzzyCorrect(in:)` below),
     /// keyed by the minimum similarity a candidate word/phrase must clear
@@ -230,13 +258,22 @@ enum DeveloperVocabulary {
     ]
 
     /// Scans `text` for runs of one or two words that measure similar
-    /// enough to a `fuzzyCorrectionTargets` entry to replace, catching
-    /// mis-hearing spellings `corrections`' exact-phrase list doesn't
-    /// enumerate. Word-only tokenizing (letters, via `Character.isLetter`)
-    /// means surrounding punctuation and whatever separates the two words
-    /// in a two-word span (space, hyphen, double space) survive untouched
-    /// — only the matched span itself is replaced, with the target's own
-    /// canonical spelling/casing.
+    /// enough to a `targets` entry to replace, catching mis-hearing
+    /// spellings an exact-phrase list doesn't enumerate. Word-only
+    /// tokenizing (letters, via `Character.isLetter`) means surrounding
+    /// punctuation and whatever separates the two words in a two-word span
+    /// (space, hyphen, double space) survive untouched — only the matched
+    /// span itself is replaced, with the target's own canonical
+    /// spelling/casing.
+    ///
+    /// Takes its target list as a parameter rather than reading
+    /// `fuzzyCorrectionTargets` directly: this mechanism isn't
+    /// developer-vocabulary-specific, just first proven out on it.
+    /// `LearnedStore.apply(in:includeDeveloperVocabulary:)` also runs it,
+    /// unconditionally, against the user's own taught corrections — so
+    /// someone dictating an email or an article gets the same fuzzy
+    /// rescue for a name or term *they* taught Murmur, not just a
+    /// developer mid-coding-session for a term Murmur shipped with.
     ///
     /// One- and two-word spans at each position are both scored, and the
     /// *better-scoring* one wins — never a fixed "longest first" —
@@ -251,8 +288,29 @@ enum DeveloperVocabulary {
     /// considered), while "super" alone against "Supabase" (0.375) loses
     /// to "super base" as a whole (0.70), so a genuine two-word
     /// mis-hearing still wins the way it needs to.
-    static func fuzzyCorrect(in text: String) -> String {
-        guard !fuzzyCorrectionTargets.isEmpty else { return text }
+    ///
+    /// A two-word span is also compared with its internal space stripped
+    /// ("super base" → "superbase") against the target's own compact form,
+    /// and the *better* of the two scores wins — a technique borrowed from
+    /// cjpais/Handy (MIT), a comparable open-source dictation app, whose
+    /// own custom-word matcher does the same before Levenshtein-scoring.
+    /// A literal space is just another character to edit-distance, so a
+    /// genuine multi-word mis-hearing of a one-word brand name is
+    /// penalized by the space itself on top of the real spelling
+    /// difference; stripping it first removes a penalty that was never
+    /// about the actual mis-hearing. Confirmed by direct computation, not
+    /// just theory: "super base" rises from 0.700 to 0.778 similar to
+    /// "Supabase" (more margin above the 0.68 floor, though it already
+    /// cleared it), "super based" 0.636→0.700. Checked for new
+    /// false-positive risk the same way — every existing safe-word
+    /// regression case in the self-test below, plus their two-word
+    /// neighbors ("the database", "database is", ...) and the literal
+    /// two-word phrase "data base", all stay well under 0.68 even with
+    /// the compact-form score included (highest was "data base" at 0.625)
+    /// — so this raises real mis-hearings without moving anything else
+    /// across the line.
+    static func fuzzyCorrect(in text: String, against targets: [String: Float]) -> String {
+        guard !targets.isEmpty else { return text }
         let tokens = wordTokens(in: text)
         guard !tokens.isEmpty else { return text }
 
@@ -266,7 +324,7 @@ enum DeveloperVocabulary {
                 guard index + windowSize <= tokens.count else { continue }
                 let window = tokens[index..<(index + windowSize)]
                 let candidate = window.map(\.word).joined(separator: " ")
-                for (term, threshold) in fuzzyCorrectionTargets {
+                for (term, threshold) in targets {
                     guard candidate.caseInsensitiveCompare(term) != .orderedSame else {
                         // Already correct — this position needs no
                         // replacement, and a *longer* window starting
@@ -275,7 +333,11 @@ enum DeveloperVocabulary {
                         alreadyCorrect = true
                         break windowSearch
                     }
-                    let similarity = levenshteinSimilarity(candidate, term)
+                    let spacedSimilarity = levenshteinSimilarity(candidate, term)
+                    let compactSimilarity = levenshteinSimilarity(
+                        candidate.filter { !$0.isWhitespace },
+                        term.filter { !$0.isWhitespace })
+                    let similarity = max(spacedSimilarity, compactSimilarity)
                     guard similarity >= threshold,
                           similarity > (bestMatch?.similarity ?? 0)
                     else { continue }
@@ -438,7 +500,7 @@ enum DeveloperVocabulary {
         // — proving the fuzzy layer generalizes rather than only replaying
         // known variants.
         for variant in ["Soupabase", "Supperbase", "Supabass", "Supebase", "Suparbase"] {
-            let result = fuzzyCorrect(in: "using \(variant) for the backend")
+            let result = fuzzyCorrect(in: "using \(variant) for the backend", against: fuzzyCorrectionTargets)
             check(result == "using Supabase for the backend", "fuzzy-corrects unseen variant \(variant.debugDescription)")
         }
 
@@ -446,13 +508,13 @@ enum DeveloperVocabulary {
         // regressing any of these silently reopens a confirmed bug.
         for safeWord in ["database", "suitcase", "separate", "cloud", "code", "supervise"] {
             let sentence = "the \(safeWord) is ready"
-            check(fuzzyCorrect(in: sentence) == sentence, "leaves \(safeWord.debugDescription) untouched")
+            check(fuzzyCorrect(in: sentence, against: fuzzyCorrectionTargets) == sentence, "leaves \(safeWord.debugDescription) untouched")
         }
 
         // Already-correct text shouldn't be rewritten into an
         // identical-looking no-op (case normalization would be a silent
         // behavior change even if invisible in this instance).
-        check(fuzzyCorrect(in: "using Supabase already") == "using Supabase already",
+        check(fuzzyCorrect(in: "using Supabase already", against: fuzzyCorrectionTargets) == "using Supabase already",
               "leaves already-correct \"Supabase\" untouched")
 
         // Regression: a correct "Supabase" immediately followed by a
@@ -460,18 +522,37 @@ enum DeveloperVocabulary {
         // as a two-word span (0.73) — high enough to have cleared the
         // threshold and swallowed "is" into the replacement, silently
         // deleting a real word. Caught live testing this exact sentence.
-        check(fuzzyCorrect(in: "Supabase is set up and working now")
+        check(fuzzyCorrect(in: "Supabase is set up and working now", against: fuzzyCorrectionTargets)
               == "Supabase is set up and working now",
               "an already-correct \"Supabase\" doesn't consume the next word")
-        check(fuzzyCorrect(in: "Supabase was the right call")
+        check(fuzzyCorrect(in: "Supabase was the right call", against: fuzzyCorrectionTargets)
               == "Supabase was the right call",
               "an already-correct \"Supabase\" doesn't consume \"was\" either")
 
         // "super bass" sits below the fuzzy floor by design (0.60,
         // *below* database's own 0.63) — it must stay unmatched here, or
         // the whole reason `corrections` still carries it becomes false.
-        check(fuzzyCorrect(in: "check the super bass on this") == "check the super bass on this",
+        check(fuzzyCorrect(in: "check the super bass on this", against: fuzzyCorrectionTargets) == "check the super bass on this",
               "leaves below-floor \"super bass\" for the exact-phrase list to catch")
+
+        // "super base" as a two-word span already cleared 0.68 before the
+        // compact-form comparison existed (0.700) — this locks in that it
+        // still does now that the score is a max() over two comparisons,
+        // not a regression risk in the other direction.
+        check(fuzzyCorrect(in: "check the super base on this", against: fuzzyCorrectionTargets)
+              == "check the Supabase on this",
+              "still fuzzy-corrects two-word \"super base\"")
+
+        // The literal two-word phrase "data base" is the nearest real
+        // English phrase to "Supabase" that the compact-form comparison
+        // (stripping the space to "database") could plausibly have pulled
+        // over the line, since single-word "database" is already the
+        // closest known false-positive risk for this term. It doesn't
+        // (0.625 computed, still well under 0.68) — see `fuzzyCorrect`'s
+        // doc comment for the fuller check this was verified against.
+        check(fuzzyCorrect(in: "the data base is ready", against: fuzzyCorrectionTargets)
+              == "the data base is ready",
+              "leaves two-word \"data base\" untouched even with compact-form scoring")
 
         check(levenshteinSimilarity("Superbase", "Supabase") > 0.7, "similarity: Superbase vs Supabase")
         check(levenshteinSimilarity("Supabase", "Supabase") == 1, "similarity: identical strings")

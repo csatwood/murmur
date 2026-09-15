@@ -120,12 +120,29 @@ enum LearnedStore {
     /// explicitly is what keeps the next new post-processing step from
     /// doing the same.
     ///
-    /// `DeveloperVocabulary.fuzzyCorrect(in:)` runs last, after every
-    /// exact-phrase correction above: it catches mis-hearing spellings
-    /// close enough to a term like "Supabase" to fuzzy-match even when
+    /// `DeveloperVocabulary.fuzzyCorrect(in:against:)` runs last, after
+    /// every exact-phrase correction above: it catches mis-hearing
+    /// spellings close enough to a known term to fuzzy-match even when
     /// they're not one of the specific spellings enumerated above, and
-    /// running it second means an exact match already found by name isn't
-    /// re-examined by the fuzzier, costlier check.
+    /// running it after exact matching means a match already found by name
+    /// isn't re-examined by the fuzzier, costlier check.
+    ///
+    /// Two separate fuzzy passes, not one merged list, because they carry
+    /// different risk profiles: `DeveloperVocabulary.fuzzyCorrectionTargets`
+    /// is a small, shared, hand-vetted list (currently just "Supabase")
+    /// gated to developer contexts because it was tuned against known
+    /// false-positive collisions with ordinary English words — see its own
+    /// doc comment. `personalFuzzyTargets` below is built fresh from
+    /// whatever *this* user has actually taught Murmur, so it runs
+    /// unconditionally, in every app and every kind of dictation — email,
+    /// articles, chat, not just developer contexts — because a name or
+    /// term someone specifically corrected once is exactly the case this
+    /// mechanism exists for, regardless of what app they happen to be
+    /// dictating into. It uses a stricter default threshold instead
+    /// (0.85, not 0.68) precisely because it *can't* be individually
+    /// vetted the way "Supabase" was — every future term the user teaches
+    /// gets the same safe-by-default floor, not a case-by-case judgment
+    /// call.
     static func apply(in text: String, includeDeveloperVocabulary: Bool) -> String {
         var result = text
         let personal = load().corrections.map { (heard: $0.heard, intended: $0.intended) }
@@ -139,10 +156,60 @@ enum LearnedStore {
                 with: NSRegularExpression.escapedTemplate(for: correction.intended),
                 options: .regularExpression)
         }
+        result = DeveloperVocabulary.fuzzyCorrect(
+            in: result, against: personalFuzzyTargets(from: personal))
         if includeDeveloperVocabulary {
-            result = DeveloperVocabulary.fuzzyCorrect(in: result)
+            result = DeveloperVocabulary.fuzzyCorrect(
+                in: result, against: DeveloperVocabulary.fuzzyCorrectionTargets)
         }
         return result
+    }
+
+    /// The strict, safe-by-default floor for `personalFuzzyTargets` below —
+    /// see `apply(in:includeDeveloperVocabulary:)`'s doc comment for why
+    /// this can't reuse `DeveloperVocabulary.fuzzyCorrectionTargets`'
+    /// looser, per-term-vetted 0.68. Matches `ParakeetEngine`'s own global
+    /// CTC rescoring floor — the other place in this codebase that has to
+    /// pick one number safe for terms nobody has individually tested.
+    private static let personalFuzzyMatchThreshold: Float = 0.85
+
+    /// Builds a fuzzy-match target list from the user's own corrections —
+    /// every `intended` spelling they've ever taught Murmur, deduplicated
+    /// case-insensitively, each at `personalFuzzyMatchThreshold`. Unlike
+    /// `DeveloperVocabulary.fuzzyCorrectionTargets`, this list isn't
+    /// curated in advance: it's built fresh from whatever this specific
+    /// user has actually corrected, which is exactly why the threshold has
+    /// to stay strict rather than being loosened per term the way
+    /// "Supabase" was.
+    ///
+    /// Skips a single-word `intended` that's itself a known English word
+    /// (Harper's dictionary — same check `isUsefulMapping` already runs on
+    /// the *`heard`* side of a candidate correction, applied here to the
+    /// *`intended`* side instead): a fuzzy floor loose enough to fix a real
+    /// mis-hearing of an ordinary dictionary word is also loose enough to
+    /// mis-fire on an unrelated, correctly-heard occurrence of that same
+    /// word elsewhere in the transcript. In practice `isUsefulMapping`
+    /// already keeps most of these out of `learned.corrections` in the
+    /// first place (it runs the equivalent check on `heard`), but nothing
+    /// upstream guarantees `intended` itself is never an ordinary word
+    /// (a homophone correction could plausibly go the other way — heard an
+    /// unusual word, intended a common one) — so this checks directly
+    /// rather than relying on that as an implicit guarantee.
+    private static func personalFuzzyTargets(
+        from corrections: [(heard: String, intended: String)]
+    ) -> [String: Float] {
+        var targets: [String: Float] = [:]
+        for correction in corrections {
+            let intended = correction.intended
+            guard !targets.keys.contains(where: {
+                $0.caseInsensitiveCompare(intended) == .orderedSame
+            }) else { continue }
+            if !intended.contains(" "), HarperChecker.isKnownEnglishWord(intended) {
+                continue
+            }
+            targets[intended] = personalFuzzyMatchThreshold
+        }
+        return targets
     }
 
     /// Vocabulary handed to the speech model before recognition: Murmur's
@@ -331,6 +398,63 @@ enum LearnedStore {
             print("\(ok ? "PASS" : "FAIL"): diff(\"\(testCase.original)\" → " +
                   "\"\(testCase.corrected)\") = \(got)")
         }
+
+        func check(_ ok: Bool, _ label: String) {
+            if !ok { passed = false }
+            print("\(ok ? "PASS" : "FAIL"): \(label)")
+        }
+
+        // personalFuzzyTargets: a real proper-noun correction becomes a
+        // fuzzy target at the strict personal floor.
+        let basetenTargets = personalFuzzyTargets(from: [("base ten", "Baseten")])
+        check(basetenTargets["Baseten"] == personalFuzzyMatchThreshold,
+              "personalFuzzyTargets includes a taught proper noun")
+
+        // Dedup is case-insensitive: two corrections that taught the same
+        // name in different casing shouldn't produce two separate targets.
+        let dedupedTargets = personalFuzzyTargets(
+            from: [("x1", "Søren"), ("x2", "søren")])
+        check(dedupedTargets.count == 1,
+              "personalFuzzyTargets dedups an intended term case-insensitively")
+
+        // A single-word `intended` that's itself an ordinary English word
+        // is excluded, mirroring `isUsefulMapping`'s own check on the
+        // `heard` side — this is a synthetic pair (not one `add()` would
+        // necessarily produce) constructed specifically to exercise that
+        // guard directly.
+        check(personalFuzzyTargets(from: [("wispr", "whisper")]).isEmpty,
+              "personalFuzzyTargets excludes an ordinary-dictionary-word intended term")
+
+        // End-to-end: this is the mechanism `apply(in:includeDeveloperVocabulary:)`
+        // now runs unconditionally, so a name the user taught Murmur gets
+        // fuzzy-rescued in *any* app — an email, an article, anywhere —
+        // not only in a developer context. "Basetin"/"Basten" are
+        // realistic near-miss spellings of "Baseten" (0.857 similar,
+        // computed directly) clearing the 0.85 floor.
+        for variant in ["Basetin", "Basten"] {
+            let result = DeveloperVocabulary.fuzzyCorrect(
+                in: "we moved inference to \(variant)", against: basetenTargets)
+            check(result == "we moved inference to Baseten",
+                  "personal fuzzy match rescues \(variant.debugDescription) outside developer mode")
+        }
+
+        // Known, deliberate limit: the strict 0.85 floor means a short
+        // name's near-miss spelling ("Soren" for "Søren", 0.800 computed)
+        // is *not* fuzzy-rescued — only an exact previously-taught spelling
+        // is, via the exact-phrase pass above. This is intentional, not an
+        // oversight: real different given names commonly measure in this
+        // same 0.75-0.80 band against each other (checked "Erik"/"Eric"
+        // 0.750, "Karen"/"Karin" 0.800, "Jon"/"John" 0.750) — a floor loose
+        // enough to catch "Soren" would just as readily rewrite someone's
+        // *other*, correctly-heard "Loren" or "Karin" into the wrong
+        // taught name, silently. Short personal names get real fuzzy
+        // tolerance from the exact-phrase list growing as the user
+        // corrects more variants over time, not from this floor.
+        let sorenTargets = personalFuzzyTargets(from: [("so ren", "Søren")])
+        check(DeveloperVocabulary.fuzzyCorrect(in: "I saw Soren yesterday", against: sorenTargets)
+              == "I saw Soren yesterday",
+              "personal fuzzy floor deliberately leaves a short name's near-miss uncaught")
+
         return passed
     }
 }

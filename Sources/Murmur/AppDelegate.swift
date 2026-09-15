@@ -41,6 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     private let navBarHUD = NavBarHUDController()
     private let recorder = AudioRecorder()
     private let history = HistoryStore()
+    let pipelineStats = PipelineStatsStore()
+    let notetaker = NotetakerController()
+    private let notetakerHotkeyMonitor = NotetakerHotkeyMonitor()
+    let scratchpadStore = ScratchpadStore()
+    private lazy var scratchpadPanel = ScratchpadPanelController(store: scratchpadStore, app: self)
+    private lazy var scratchpadHotkey = ScratchpadHotkeyMonitor()
     private var transcriber = Transcriber(locale: Settings.locale)
     private lazy var hotkeyMonitor = HotkeyMonitor(hotkey: Settings.hotkey)
     private lazy var profileHotkeyMonitor = ProfileHotkeyMonitor()
@@ -66,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// Set when a History row is sent to Templates; the Templates page
     /// picks it up and clears it.
     @Published var pendingTemplateText: String?
+    /// Set when a Scratchpad note is sent to Transforms; that page's own
+    /// "Try it here" box picks it up and clears it, mirroring
+    /// `pendingTemplateText`.
+    @Published var pendingTransformText: String?
     /// Set when a notification click (or other outside prompt) should jump
     /// the dashboard to a specific page; `AppShellRoot` picks it up and
     /// clears it, mirroring `pendingTemplateText`.
@@ -74,6 +84,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// launch, `nil` otherwise. `AppShellRoot` presents the update sheet
     /// via `.sheet(item:)` off this.
     @Published var availableUpdate: AppUpdate?
+    /// Ask Murmur's whole conversation, kept here rather than as `@State`
+    /// on `AskPage` — that page is a fresh `View` struct every time the
+    /// rail navigates to it, so `@State` reset the thread to empty on every
+    /// visit. Living on `AppDelegate` instead means it survives navigating
+    /// away and back for as long as the app stays open (not across a
+    /// relaunch — that would need its own on-disk store, not asked for
+    /// here). Also why an in-flight question's `Task` still lands
+    /// correctly even if the user leaves the page before it resolves: it
+    /// writes into this shared, long-lived object rather than into a
+    /// `View` instance that may already be gone.
+    @Published var askTurns: [AskPage.ChatTurn] = []
+    @Published var askThinking = false
 
     private let statusHUD = StatusHUDController()
 
@@ -134,6 +156,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             DispatchQueue.main.async { self?.handleProfileHotkey(slot) }
         }
         profileHotkeyMonitor.startMonitoring()
+        scratchpadHotkey.onTrigger = { [weak self] in
+            DispatchQueue.main.async { self?.scratchpadPanel.toggle() }
+        }
+        scratchpadHotkey.startMonitoring()
         transformManager.onStatus = { [weak self] status in
             self?.transformStatus = status
         }
@@ -196,6 +222,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         }
         refreshVoiceProfileIfDue()
         checkForUpdates()
+
+        // Same engine-selection/fallback path every normal dictation
+        // already goes through — a meeting clip isn't a second,
+        // differently-behaved transcription pipeline.
+        notetaker.transcribeFile = { [weak self] url in
+            try await self?.recognize(fileAt: url, bundleID: nil) ?? ""
+        }
+        notetaker.rewriteEngine = rewriteEngine
+        notetaker.recordPipelineStats = { [weak self] harper, dictionary, snippets in
+            self?.pipelineStats.record(
+                harperFixes: harper, dictionaryFixes: dictionary, snippetExpansions: snippets)
+        }
+        notetaker.setWindowExcludedFromCapture = { [weak self] excluded in
+            self?.window?.sharingType = excluded ? .none : .readOnly
+        }
+
+        notetakerHotkeyMonitor.onTrigger = { [weak self] in
+            guard let self else { return }
+            if self.notetaker.canStart {
+                self.notetaker.start(app: self.notetaker.detector.activeMeetingApp)
+            } else if case .capturing = self.notetaker.state {
+                self.notetaker.stop()
+            }
+        }
+        notetakerHotkeyMonitor.startMonitoring()
     }
 
     /// Checks GitHub's own Releases API for this repo — no appcast, no
@@ -302,6 +353,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         onboardingWindow?.close()
         onboardingWindow = nil
         showMainWindow()
+    }
+
+    /// The in-app Scratchpad page's own "Start new note"/note-row clicks
+    /// route here — same floating panel the global hotkey opens, just
+    /// landed on a specific note (or a fresh one) instead of whatever was
+    /// last active.
+    func openScratchpadPanel(noteID: UUID? = nil) {
+        if let noteID {
+            scratchpadPanel.open(noteID: noteID)
+        } else {
+            scratchpadPanel.show()
+        }
     }
 
     // MARK: - Main window
@@ -701,6 +764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             let frontmost = NSWorkspace.shared.frontmostApplication
             recordingTargetBundleID = frontmost?.bundleIdentifier
             recordingTargetAppName = frontmost?.localizedName
+            statusHUD.setTargetAppIcon(frontmost?.icon)
             recordingForcedBundleID = forcedBundleID
             uiState = .recording
             lastError = nil
@@ -786,7 +850,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return
         }
 
-        Task { [history, rewriteEngine] in
+        Task { [history, rewriteEngine, pipelineStats] in
             defer { try? FileManager.default.removeItem(at: url) }
             // A second, sharper opinion on top of the RMS-based `hasSignal`
             // gate just above — catches what raw amplitude can't, like a
@@ -841,24 +905,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 dictationLog.info(
                     "locale gate: Settings.localeIdentifier=\(Settings.localeIdentifier, privacy: .public) engine=\(Settings.engine, privacy: .public) parakeetModel=\(Settings.parakeetModel, privacy: .public) isEnglishDictation=\(isEnglishDictation)")
 
+                // Tallied for Insights' "Fixes made by Murmur" card only —
+                // each count comes from a plain before/after read of
+                // `formatted` around a call already made below, never from
+                // changing what that call does or re-deriving its result.
+                var harperFixCount = 0
+                var dictionaryFixCount = 0
+                var snippetExpansionCount = 0
+
                 var formatted: String
                 if style.skipsAllProcessing {
                     // Raw: exact words, no cleanup, no AI. For terminals and
                     // code editors, where "corrections" would be corruption.
                     formatted = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                     if isEnglishDictation {
+                        let beforeDictionary = formatted
                         formatted = LearnedStore.apply(
                             in: formatted, includeDeveloperVocabulary: developerVocabulary)
+                        dictionaryFixCount += PipelineDiff.wordChangeCount(
+                            from: beforeDictionary, to: formatted)
                     }
+                    snippetExpansionCount += PipelineDiff.snippetMatchCount(
+                        in: formatted, snippets: SnippetStore.load())
                     formatted = SnippetStore.expand(in: formatted)
                 } else {
                     formatted = TextFormatter(
                         dictionary: isEnglishDictation ? TextFormatter.loadDictionary() : [:]
                     ).format(raw)
                     if isEnglishDictation {
+                        let beforeDictionary = formatted
                         formatted = LearnedStore.apply(
                             in: formatted, includeDeveloperVocabulary: developerVocabulary)
+                        dictionaryFixCount += PipelineDiff.wordChangeCount(
+                            from: beforeDictionary, to: formatted)
                     }
+                    snippetExpansionCount += PipelineDiff.snippetMatchCount(
+                        in: formatted, snippets: SnippetStore.load())
                     formatted = SnippetStore.expand(in: formatted)
 
                     // Everything below needs the model, and the spoken
@@ -898,6 +980,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                         // price of one round-trip.
                         if let instructions = RewritePlan.instructions(
                             template: template, style: style,
+                            cleanupLevel: StyleSettings.defaultCleanupLevel,
                             voice: Settings.useVoiceProfile ? voiceProfile : nil),
                            !body.isEmpty {
                             // "Applying As spoken style…" read oddly once
@@ -943,15 +1026,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // "corrects" other languages' real words into the
                     // nearest English one instead of leaving them alone.
                     if !formatted.isEmpty, isEnglishDictation {
+                        let beforeHarper = formatted
                         formatted = HarperChecker.fix(
                             formatted,
                             vocabulary: LearnedStore.biasTerms(
                                 includeDeveloperVocabulary: developerVocabulary))
+                        harperFixCount += PipelineDiff.wordChangeCount(from: beforeHarper, to: formatted)
                     }
                 }
                 dictationLog.info("pipeline done: \(formatted.count) chars")
                 if !formatted.isEmpty {
-                    history.add(formatted, duration: duration)
+                    history.add(formatted, duration: duration, targetBundleID: resolvedBundleID)
+                    pipelineStats.record(
+                        harperFixes: harperFixCount, dictionaryFixes: dictionaryFixCount,
+                        snippetExpansions: snippetExpansionCount)
                     entries = history.entries
                     dictationLog.info("history: added, inserting text")
                     refreshVoiceProfileIfDue()
@@ -1254,6 +1342,21 @@ enum Settings {
         set { defaults.set(newValue, forKey: "parakeetModel") }
     }
 
+    /// Which CTC model `ParakeetEngine` loads for vocabulary-boosting
+    /// rescoring — independent of `parakeetModel` (v2/v3), which is the
+    /// main transcription model. Defaults to `"ctc06b"`, the larger/more
+    /// conservative of the two options FluidAudio ships, preserving
+    /// existing behavior for anyone who never touches this setting.
+    /// `"ctc110m"` is smaller and faster — a comparable open-source
+    /// dictation app (FluidVoice) uses it for exactly this purpose — kept
+    /// as an alongside option, not a replacement, since it hasn't been
+    /// tested here as thoroughly against the same false-positive
+    /// collisions `ctc06b`'s thresholds were tuned against.
+    static var parakeetCtcVariant: String {
+        get { defaults.string(forKey: "parakeetCtcVariant") ?? "ctc06b" }
+        set { defaults.set(newValue, forKey: "parakeetCtcVariant") }
+    }
+
     /// Auto-stop a hands-free recording on a detected pause, instead of
     /// requiring a second hotkey press. Defaults on; the underlying
     /// streaming VAD is FluidAudio's own "beta" feature, so this stays a
@@ -1324,6 +1427,99 @@ enum Settings {
     static var useVoiceProfile: Bool {
         get { defaults.object(forKey: "useVoiceProfile") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "useVoiceProfile") }
+    }
+
+    /// Off by default, unlike every other meeting-detection signal —
+    /// turning this on means `MeetingDetector` periodically reads the
+    /// frontmost browser's own active-tab URL (via Apple Events) to check
+    /// it against known meeting-link patterns, which is a meaningfully
+    /// different privacy footprint from just checking a native app's
+    /// bundle ID, so it needs an explicit opt-in rather than being on from
+    /// first launch.
+    static var browserMeetingDetectionEnabled: Bool {
+        get { defaults.object(forKey: "browserMeetingDetectionEnabled") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "browserMeetingDetectionEnabled") }
+    }
+
+    /// The floating Scratchpad panel's own global hotkey — user-rebindable
+    /// via `ScratchpadHotkeyEditor`, unlike Transforms' fixed ⌥1/⌥2 or the
+    /// profile slots' fixed ⌃⇧1…9. Defaults to `ScratchpadHotkeyMonitor`'s
+    /// own ⌃⇧Space.
+    static var scratchpadHotkeyKeyCode: UInt16 {
+        get {
+            guard let stored = defaults.object(forKey: "scratchpadHotkeyKeyCode") as? Int else {
+                return ScratchpadHotkeyMonitor.defaultKeyCode
+            }
+            return UInt16(stored)
+        }
+        set { defaults.set(Int(newValue), forKey: "scratchpadHotkeyKeyCode") }
+    }
+    static var scratchpadHotkeyModifiers: NSEvent.ModifierFlags {
+        get {
+            guard let stored = defaults.object(forKey: "scratchpadHotkeyModifiers") as? UInt else {
+                return ScratchpadHotkeyMonitor.defaultModifiers
+            }
+            return NSEvent.ModifierFlags(rawValue: stored)
+        }
+        set { defaults.set(newValue.rawValue, forKey: "scratchpadHotkeyModifiers") }
+    }
+
+    /// Notetaker's own global hotkey — same rebindable mechanism as
+    /// Scratchpad's, via `NotetakerHotkeyMonitor`/`NotetakerHotkeyEditor`.
+    static var notetakerHotkeyKeyCode: UInt16 {
+        get {
+            guard let stored = defaults.object(forKey: "notetakerHotkeyKeyCode") as? Int else {
+                return NotetakerHotkeyMonitor.defaultKeyCode
+            }
+            return UInt16(stored)
+        }
+        set { defaults.set(Int(newValue), forKey: "notetakerHotkeyKeyCode") }
+    }
+    static var notetakerHotkeyModifiers: NSEvent.ModifierFlags {
+        get {
+            guard let stored = defaults.object(forKey: "notetakerHotkeyModifiers") as? UInt else {
+                return NotetakerHotkeyMonitor.defaultModifiers
+            }
+            return NSEvent.ModifierFlags(rawValue: stored)
+        }
+        set { defaults.set(newValue.rawValue, forKey: "notetakerHotkeyModifiers") }
+    }
+
+    /// Gates whether `NotetakerController` runs its two `LivePreviewTranscriber`
+    /// instances at all during a capture — on by default (it's the reassurance
+    /// feature it was built to be), off for anyone who finds a live caption
+    /// distracting rather than helpful.
+    static var notetakerLiveTranscriptEnabled: Bool {
+        get { defaults.object(forKey: "notetakerLiveTranscriptEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "notetakerLiveTranscriptEnabled") }
+    }
+
+    /// Excludes the main window from screen recording/sharing for as long
+    /// as Notetaker is capturing or processing — off by default since it's
+    /// a real behavior change (anything you screen-share won't show Murmur
+    /// at all while this is on, not just the Notetaker page).
+    static var notetakerHideFromScreenCapture: Bool {
+        get { defaults.object(forKey: "notetakerHideFromScreenCapture") as? Bool ?? false }
+        set { defaults.set(newValue, forKey: "notetakerHideFromScreenCapture") }
+    }
+
+    /// Auto-stops a capture once the app it started with has fully quit —
+    /// checked against the *running* apps list, not the frontmost one, so
+    /// tabbing away to check email mid-call doesn't stop a still-live
+    /// meeting. On by default: a capture nobody remembered to stop is more
+    /// likely a forgotten one than an intentional long one.
+    static var notetakerAutoStopOnCallEnd: Bool {
+        get { defaults.object(forKey: "notetakerAutoStopOnCallEnd") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "notetakerAutoStopOnCallEnd") }
+    }
+
+    /// Minutes before a capture stops itself automatically; `0` means no
+    /// limit. Defaults to 120 — long enough for nearly any real meeting,
+    /// short enough that an accidentally-left-running capture doesn't fill
+    /// the disk with hours of silence.
+    static var notetakerMaxRecordingMinutes: Int {
+        get { defaults.object(forKey: "notetakerMaxRecordingMinutes") as? Int ?? 120 }
+        set { defaults.set(newValue, forKey: "notetakerMaxRecordingMinutes") }
     }
 
     /// Light / Dark / follow the system. Stored as a raw string so an

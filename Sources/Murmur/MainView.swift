@@ -5,7 +5,7 @@ import SwiftUI
 // MARK: - Pages
 
 enum Page: Hashable {
-    case home, insights, ask, dictionary, training, snippets, style, transforms
+    case home, insights, ask, notetaker, dictionary, training, snippets, style, transforms
     case templates, scratchpad, appProfiles
     case settings, help, legal
 
@@ -14,6 +14,7 @@ enum Page: Hashable {
         case .home: return "Home"
         case .insights: return "Insights"
         case .ask: return "Ask Murmur"
+        case .notetaker: return "Notetaker"
         case .dictionary: return "Dictionary"
         case .training: return "Voice Profile"
         case .snippets: return "Snippets"

@@ -454,8 +454,21 @@ private struct NavBarHUDView: View {
                         NavPopoverRow(title: "Ask Murmur", icon: .ask) {
                             navigate(to: .ask)
                         }
-                        NavPopoverRow(title: "New note", icon: .scratch, trailing: "⌥M") {
-                            navigate(to: .scratchpad)
+                        // Opens the floating Scratchpad panel directly —
+                        // not `navigate(to: .scratchpad)` (the main-window
+                        // Recents page) — so this stays a true quick
+                        // capture that doesn't need Murmur's window open at
+                        // all. Trailing label matches
+                        // `ScratchpadHotkeyMonitor`'s real combo; this used
+                        // to say "⌥M", a shortcut nothing actually wired up.
+                        NavPopoverRow(
+                            title: "New note", icon: .scratch,
+                            trailing: KeyComboLabel.compact(
+                                modifiers: Settings.scratchpadHotkeyModifiers,
+                                keyCode: Settings.scratchpadHotkeyKeyCode)
+                        ) {
+                            app.openScratchpadPanel()
+                            openPopover = nil
                         }
                         NavPopoverRow(title: "Copy last dictation", icon: .copy) {
                             copyLastDictation()

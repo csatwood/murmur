@@ -63,6 +63,14 @@ final class StatusHUDController {
     private var panel: NSPanel?
     private let model = HUDModel()
 
+    // One fixed size, not a base/expanded pair — this HUD no longer shows
+    // a live transcript that needs room to grow into (see this file's own
+    // removal note on `LiveTranscriptText`), so there's nothing left that
+    // ever needs the panel taller than its icon/wave/label footer alone.
+    // Wide enough for the longest status label ("Listening — hands-free")
+    // to sit comfortably next to a full-width waveform without crowding.
+    private static let size = NSSize(width: 320, height: 58)
+
     func update(_ state: HUDState) {
         guard state != .hidden else {
             hide()
@@ -72,9 +80,20 @@ final class StatusHUDController {
         show()
     }
 
+    /// Set once, from `AppDelegate.startRecording()`, to the frontmost
+    /// app's own `NSRunningApplication.icon` at the moment recording
+    /// starts — the icon shown in the HUD's footer is *who this dictation
+    /// is going to*, not Murmur's own icon. Only actually cleared in
+    /// `hide()`, so it stays put through the brief `.processing` moment.
+    func setTargetAppIcon(_ icon: NSImage?) {
+        model.targetAppIcon = icon
+    }
+
     private func show() {
         let panel = existingOrNewPanel()
-        position(panel)
+        panel.setFrame(
+            NSRect(origin: HUDDock.origin(for: Self.size), size: Self.size),
+            display: true, animate: false)
         // `orderFrontRegardless` rather than `makeKeyAndOrderFront`: the HUD
         // must never take key status. Dictation pastes into whatever app was
         // frontmost when recording started, so stealing focus here would
@@ -84,13 +103,14 @@ final class StatusHUDController {
 
     private func hide() {
         panel?.orderOut(nil)
+        model.targetAppIcon = nil
     }
 
     private func existingOrNewPanel() -> NSPanel {
         if let panel { return panel }
 
         let hosting = NSHostingView(rootView: StatusHUDView(model: model))
-        hosting.frame = NSRect(x: 0, y: 0, width: 260, height: 46)
+        hosting.frame = NSRect(origin: .zero, size: Self.size)
 
         let newPanel = NSPanel(
             contentRect: hosting.frame,
@@ -119,10 +139,6 @@ final class StatusHUDController {
         panel = newPanel
         return newPanel
     }
-
-    private func position(_ panel: NSPanel) {
-        panel.setFrameOrigin(HUDDock.origin(for: panel.frame.size))
-    }
 }
 
 /// Separate observable so the panel's SwiftUI content updates without the
@@ -130,38 +146,68 @@ final class StatusHUDController {
 @MainActor
 private final class HUDModel: ObservableObject {
     @Published var state: HUDState = .hidden
+    /// The target app's own icon — see `StatusHUDController.setTargetAppIcon`.
+    @Published var targetAppIcon: NSImage?
 }
 
+/// Icon / wave / label only — this used to also show a live-transcript
+/// preview above this row (`LiveTranscriptText`, removed), decoded by a
+/// separate, faster-but-lower-quality model (Parakeet Flash) than whichever
+/// engine the user actually has selected. In practice that meant two real
+/// problems, not just a styling one: it was often several seconds behind
+/// (sometimes never appearing at all for a short dictation) and, being a
+/// different model, could show words visibly different from the real
+/// transcript that replaced it — reading as "this got it wrong" right
+/// before the correct text appeared, which undermined trust rather than
+/// building it. The waveform below already answers the one question a live
+/// preview was trying to: "is it actually hearing me" — without ever being
+/// able to look *wrong*.
 private struct StatusHUDView: View {
     @ObservedObject var model: HUDModel
 
     var body: some View {
-        HStack(spacing: 7) {
+        statusRow
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .background(hudShape.fill(Palette.navActivePill))
+            .overlay(hudShape.stroke(.white.opacity(0.14), lineWidth: 1))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Target-app icon, then a waveform/dots that stretches to fill the
+    /// middle, then the state label fixed to its own natural width on the
+    /// right — icon-left / wave-centered / label-right.
+    private var statusRow: some View {
+        HStack(spacing: 12) {
+            if let icon = model.targetAppIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 24, height: 24)
+            }
             if model.state.isRecording {
                 MiniWaveform(color: Palette.sunset)
             } else {
                 ProcessingDots(color: Palette.sunset)
             }
             Text(model.state.label)
-                .font(.manrope(11, .medium))
+                .font(.manrope(14, .medium))
                 .foregroundStyle(.white)
                 .lineLimit(1)
+                .fixedSize()
         }
-        // Wispr Flow — the reference point for this element — docks a
-        // pill this size right at another app's own bottom toolbar
-        // without it reading as broken; the previous size and shadow
-        // here were tuned for standing alone on a bare desktop, which is
-        // the uncommon case; a floating HUD spends nearly all its time
-        // over some app's own UI, not over one. Main.dc.html's HUD artboard
-        // puts a soft shadow back under this pill — tried, and reverted
-        // again by request: it still reads as a box under the pill rather
-        // than the pill just floating, the same call this made previously.
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(Capsule().fill(Palette.navActivePill))
-        .overlay(Capsule().stroke(.white.opacity(0.14), lineWidth: 1))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
+
+    // A capsule, always — with no more taller "expanded" card state to
+    // distinguish from, this is back to being a single fixed-height pill
+    // in every way that matters, the same as before the live-transcript
+    // feature (and its own two-shape `hudShape`) existed.
+    private var hudShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Self.dockedCornerRadius, style: .continuous)
+    }
+
+    private static let dockedCornerRadius: CGFloat = 25
 }
 
 /// A small animated audio-level waveform — the floating HUD's recording
@@ -177,24 +223,32 @@ private struct MiniWaveform: View {
     let color: Color
     @State private var tall = false
 
+    // 11 bars, not 5 — the icon/wave/label footer redesign puts this in
+    // the middle of a much wider row (it now stretches via `maxWidth:
+    // .infinity` below to fill the space between the app icon and the
+    // state label, matching the reference's noticeably denser, wider
+    // waveform, instead of sitting as a small fixed-width glyph next to
+    // the label the way it did before.
     private static let bars: [(delay: Double, short: CGFloat, tall: CGFloat)] = [
-        (0.00, 0.35, 0.85), (0.10, 0.45, 1.0), (0.20, 0.3, 0.65),
-        (0.05, 0.4, 0.9), (0.15, 0.35, 1.0),
+        (0.00, 0.3, 0.55), (0.08, 0.45, 0.85), (0.16, 0.3, 0.6), (0.04, 0.5, 1.0),
+        (0.20, 0.35, 0.7), (0.12, 0.55, 0.95), (0.02, 0.3, 0.55), (0.18, 0.45, 0.85),
+        (0.10, 0.3, 0.65), (0.06, 0.4, 0.75), (0.14, 0.3, 0.5),
     ]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2.5) {
+        HStack(alignment: .center, spacing: 3) {
             ForEach(Array(Self.bars.enumerated()), id: \.offset) { _, bar in
                 Capsule()
                     .fill(color)
-                    .frame(width: 2.5, height: 13 * (tall ? bar.tall : bar.short))
+                    .frame(width: 3, height: 22 * (tall ? bar.tall : bar.short))
                     .animation(
                         .easeInOut(duration: 0.45).repeatForever(autoreverses: true)
                             .delay(bar.delay),
                         value: tall)
             }
         }
-        .frame(width: 20, height: 13)
+        .frame(height: 22)
+        .frame(maxWidth: .infinity)
         .onAppear { tall = true }
     }
 }
@@ -225,7 +279,13 @@ private struct ProcessingDots: View {
                         value: up)
             }
         }
-        .frame(width: 20, height: 13)
+        .frame(height: 13)
+        // `maxWidth: .infinity`, matching `MiniWaveform`'s own — so the
+        // footer's middle slot stays centered between the app icon and
+        // the state label the same way regardless of which of the two
+        // indicators is showing, rather than the label shifting left
+        // whenever a processing state swaps the wave out for these dots.
+        .frame(maxWidth: .infinity)
         .onAppear { up = true }
     }
 }

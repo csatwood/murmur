@@ -5,6 +5,11 @@ struct HistoryEntry: Codable, Identifiable, Equatable {
     let date: Date
     /// Length of the recording, if known. Used for words-per-minute stats.
     var duration: TimeInterval?
+    /// The frontmost app when this dictation started, if known. Optional
+    /// with a default so entries saved before this field existed still
+    /// decode fine — they just carry no app association, same as one
+    /// recorded with no frontmost app resolvable (e.g. focus lost mid-hold).
+    var targetBundleID: String? = nil
 
     var id: String { "\(date.timeIntervalSince1970)-\(text.hashValue)" }
 
@@ -41,8 +46,10 @@ final class HistoryStore {
         }
     }
 
-    func add(_ text: String, duration: TimeInterval? = nil) {
-        entries.insert(HistoryEntry(text: text, date: Date(), duration: duration), at: 0)
+    func add(_ text: String, duration: TimeInterval? = nil, targetBundleID: String? = nil) {
+        entries.insert(
+            HistoryEntry(text: text, date: Date(), duration: duration, targetBundleID: targetBundleID),
+            at: 0)
         prune()
         save()
     }
@@ -65,7 +72,8 @@ final class HistoryStore {
     func update(id: String, text: String) {
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         entries[index] = HistoryEntry(
-            text: text, date: entries[index].date, duration: entries[index].duration)
+            text: text, date: entries[index].date, duration: entries[index].duration,
+            targetBundleID: entries[index].targetBundleID)
         save()
     }
 

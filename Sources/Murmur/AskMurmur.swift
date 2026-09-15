@@ -106,13 +106,48 @@ enum AskMurmur {
 
     // MARK: - Retrieval
 
+    /// Shared IDF + recency scoring core for `relevantEntries` and
+    /// `relevantMeetings` below — ranks any dated-text collection by how
+    /// well it matches `questionWords`, weighting rare shared words far
+    /// more than common ones (matching "Kubernetes" says more than matching
+    /// "design") and giving newer items a mild edge without letting age
+    /// outrank relevance. Returns indices into `pool`, ranked best-first;
+    /// each caller maps those back to its own concrete type.
+    private static func rankedIndices(
+        matching questionWords: Set<String>, pool: [(text: String, date: Date)], now: Date
+    ) -> [Int] {
+        let documents = pool.map { keywords(in: $0.text) }
+        let total = Double(pool.count)
+
+        // Document frequency, computed only for the words actually asked about.
+        var documentFrequency: [String: Int] = [:]
+        for word in questionWords {
+            documentFrequency[word] = documents.reduce(0) {
+                $0 + ($1.contains(word) ? 1 : 0)
+            }
+        }
+
+        let scored = zip(pool.indices, documents).compactMap {
+            index, words -> (Int, Double)? in
+            let matches = questionWords.intersection(words)
+            guard !matches.isEmpty else { return nil }
+
+            let relevance = matches.reduce(0.0) { sum, word in
+                let frequency = Double(documentFrequency[word] ?? 0)
+                // +1 smoothing keeps this finite when a word is in every note.
+                return sum + log((total + 1) / (frequency + 1)) + 1
+            }
+            let ageDays = max(0, now.timeIntervalSince(pool[index].date) / 86_400)
+            let recency = exp(-ageDays / 45)
+            return (index, relevance * (1 + 0.35 * recency))
+        }
+
+        return scored
+            .sorted { $0.1 == $1.1 ? pool[$0.0].date > pool[$1.0].date : $0.1 > $1.1 }
+            .map(\.0)
+    }
+
     /// Picks the entries most relevant to the question.
-    ///
-    /// Scoring is inverse-document-frequency weighted rather than a raw
-    /// count of shared words: matching a rare term like "Kubernetes" says
-    /// far more about relevance than matching "design", and plain overlap
-    /// counting treated the two identically. A mild recency factor breaks
-    /// ties toward newer notes without letting age outrank relevance.
     static func relevantEntries(
         for question: String, in entries: [HistoryEntry], limit: Int = 40,
         now: Date = Date()
@@ -132,52 +167,96 @@ enum AskMurmur {
         // or plain recency, is the whole answer. Entries are newest-first.
         guard !questionWords.isEmpty else { return Array(pool.prefix(limit)) }
 
-        let documents = pool.map { keywords(in: $0.text) }
-        let total = Double(pool.count)
-
-        // Document frequency, computed only for the words actually asked about.
-        var documentFrequency: [String: Int] = [:]
-        for word in questionWords {
-            documentFrequency[word] = documents.reduce(0) {
-                $0 + ($1.contains(word) ? 1 : 0)
-            }
-        }
-
-        let scored = zip(pool, documents).compactMap {
-            entry, words -> (HistoryEntry, Double)? in
-            let matches = questionWords.intersection(words)
-            guard !matches.isEmpty else { return nil }
-
-            let relevance = matches.reduce(0.0) { sum, word in
-                let frequency = Double(documentFrequency[word] ?? 0)
-                // +1 smoothing keeps this finite when a word is in every note.
-                return sum + log((total + 1) / (frequency + 1)) + 1
-            }
-            let ageDays = max(0, now.timeIntervalSince(entry.date) / 86_400)
-            let recency = exp(-ageDays / 45)
-            return (entry, relevance * (1 + 0.35 * recency))
-        }
-
-        let matched = scored
-            .sorted { $0.1 == $1.1 ? $0.0.date > $1.0.date : $0.1 > $1.1 }
-            .prefix(limit)
-            .map(\.0)
+        let indices = rankedIndices(
+            matching: questionWords, pool: pool.map { (text: $0.text, date: $0.date) }, now: now)
+        let matched = indices.prefix(limit).map { pool[$0] }
         return matched.isEmpty ? Array(pool.prefix(limit)) : Array(matched)
     }
 
-    static func ask(
-        _ question: String, history: [HistoryEntry], engine: RewriteEngine,
-        voice: VoiceProfile? = nil
-    ) async throws -> String {
-        guard !history.isEmpty else {
-            return "You don't have any dictations yet — dictate a few things, " +
-                   "then ask again."
+    /// Same retrieval as `relevantEntries`, over meeting notes instead of
+    /// dictations — a meeting's whole transcript plus its summary form the
+    /// searchable text. `limit` is far smaller than `relevantEntries`'
+    /// default: a single meeting is much longer than a single dictation, so
+    /// fewer of them still fill the same context budget.
+    static func relevantMeetings(
+        for question: String, in notes: [MeetingNote], limit: Int = 6,
+        now: Date = Date()
+    ) -> [MeetingNote] {
+        let (window, residual) = timeWindow(in: question, now: now)
+
+        var pool = notes
+        if let window {
+            pool = notes.filter { window.contains($0.date) }
+            if pool.isEmpty { return [] }
         }
-        let candidates = relevantEntries(for: question, in: history)
-        // Only a time-scoped question can come back empty; saying so beats
-        // answering about a period the user didn't ask about.
-        guard !candidates.isEmpty else {
-            return "You didn't dictate anything in that time range."
+
+        let questionWords = keywords(in: residual)
+        guard !questionWords.isEmpty else { return Array(pool.prefix(limit)) }
+
+        let indices = rankedIndices(
+            matching: questionWords,
+            pool: pool.map { (text: "\($0.title) \($0.summary ?? "") \($0.transcriptText)", date: $0.date) },
+            now: now)
+        let matched = indices.prefix(limit).map { pool[$0] }
+        return matched.isEmpty ? Array(pool.prefix(limit)) : Array(matched)
+    }
+
+    /// One turn's question paired with the answer Murmur gave it — the
+    /// minimal shape `ask` needs from prior turns to stay coherent across a
+    /// follow-up, independent of however the caller's own chat-turn type
+    /// stores everything else (sources, an id, …).
+    struct PriorTurn {
+        let question: String
+        let answer: String
+    }
+
+    /// One thing an answer was actually generated from — a past dictation
+    /// or a meeting note — letting `Answer.sources` cite both kinds under
+    /// one citation list instead of only ever pointing at dictation
+    /// history, which is all it could reference before Notetaker existed.
+    struct AskSource: Identifiable {
+        enum Kind: Equatable { case dictation, meeting }
+        let id: String
+        let date: Date
+        /// A one-line preview for `SourcesDisclosure` — the dictation's own
+        /// text, or a meeting's title.
+        let preview: String
+        let kind: Kind
+    }
+
+    struct Answer {
+        let text: String
+        /// The notes actually retrieved for this question, in the order
+        /// they were scored — empty for the two early-return cases (no
+        /// history, or a time-scoped question with nothing in range), since
+        /// neither one asked the model anything.
+        let sources: [AskSource]
+    }
+
+    static func ask(
+        _ question: String, history: [HistoryEntry], meetings: [MeetingNote] = [],
+        engine: RewriteEngine, conversation: [PriorTurn] = [], voice: VoiceProfile? = nil
+    ) async throws -> Answer {
+        guard !history.isEmpty || !meetings.isEmpty else {
+            return Answer(
+                text: "You don't have any dictations or meeting notes yet — dictate " +
+                      "something, or capture a meeting with Notetaker, then ask again.",
+                sources: [])
+        }
+        // A follow-up like "who owns it?" carries almost no keywords of its
+        // own — folding in the last couple of questions (not answers, which
+        // are the model's own prose and would just add noise) keeps
+        // retrieval anchored to what the conversation is actually about,
+        // not just this one short question.
+        let retrievalQuery = (conversation.suffix(2).map(\.question) + [question]).joined(separator: " ")
+        let candidates = relevantEntries(for: retrievalQuery, in: history)
+        let meetingCandidates = relevantMeetings(for: retrievalQuery, in: meetings)
+        // Only a time-scoped question can come back empty on both; saying
+        // so beats answering about a period the user didn't ask about.
+        guard !candidates.isEmpty || !meetingCandidates.isEmpty else {
+            return Answer(
+                text: "You didn't dictate anything or have any meetings in that time range.",
+                sources: [])
         }
 
         let formatter = DateFormatter()
@@ -188,8 +267,21 @@ enum AskMurmur {
         for entry in candidates {
             let line = "[\(formatter.string(from: entry.date))] \(entry.text)\n"
             // Keep a safe prompt size for the on-device model's context window.
-            if context.count + line.count > 6000 { break }
+            if context.count + line.count > 4000 { break }
             context += line
+        }
+
+        // A separate, smaller budget than dictations above — a single
+        // meeting transcript is already much longer than a single
+        // dictation, so it needs its own cap rather than crowding out every
+        // dictation candidate from the shared one.
+        var meetingContext = ""
+        for note in meetingCandidates {
+            let label = note.calendarTitle ?? note.title
+            let body = note.summary?.isEmpty == false ? note.summary! : note.transcriptText
+            let line = "[\(formatter.string(from: note.date)) — Meeting: \(label)] \(body)\n"
+            if meetingContext.count + line.count > 4000 { break }
+            meetingContext += line
         }
 
         // The profile tells the model who it's summarising, which helps it
@@ -198,17 +290,46 @@ enum AskMurmur {
             "\nFor context, this person's dictation style: \($0.voiceContext)\n"
         } ?? ""
 
+        // Recent turns, not the whole thread — each call still gets its own
+        // fresh, bounded session (see `RewriteEngine.rewrite`'s own note on
+        // why a session is never reused across turns); this just repeats a
+        // short recap of what was already asked so "it"/"that" resolve,
+        // without the prompt growing over an entire conversation.
+        let conversationBlock: String
+        if conversation.isEmpty {
+            conversationBlock = ""
+        } else {
+            let recap = conversation.suffix(3)
+                .map { "Q: \($0.question)\nA: \($0.answer)" }
+                .joined(separator: "\n\n")
+            conversationBlock = """
+
+            RECENT CONVERSATION (for context only — answer the NEW question below):
+            \(recap)
+
+            """
+        }
+
+        let sections = [
+            context.isEmpty ? nil : "PAST DICTATIONS:\n\(context)",
+            meetingContext.isEmpty ? nil : "MEETING NOTES:\n\(meetingContext)",
+        ].compactMap { $0 }.joined(separator: "\n\n")
+
         let instructions = """
         Answer the user's question using ONLY the timestamped notes below — \
-        these are their own past dictations. If the answer isn't in them, \
-        say so plainly instead of guessing or inventing details. Be \
+        their own past dictations and/or meeting notes. If the answer isn't \
+        in them, say so plainly instead of guessing or inventing details. Be \
         concise: a few sentences or a short list, not an essay. You may \
         reference a note's date naturally when it helps.
-        \(voiceLine)
-        NOTES:
-        \(context)
+        \(voiceLine)\(conversationBlock)
+        \(sections)
         """
-        return try await engine.rewrite(question, instructions: instructions)
+        let text = try await engine.rewrite(question, instructions: instructions)
+        let sources = candidates.map { AskSource(id: $0.id, date: $0.date, preview: $0.text, kind: .dictation) }
+            + meetingCandidates.map {
+                AskSource(id: $0.id.uuidString, date: $0.date, preview: $0.calendarTitle ?? $0.title, kind: .meeting)
+            }
+        return Answer(text: text, sources: sources)
     }
 
     // MARK: - Self test (retrieval)
