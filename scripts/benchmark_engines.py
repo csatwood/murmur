@@ -10,20 +10,31 @@ noise, or far-field conditions. Treat it as a first screening pass, the same
 caution the report itself gives about leaderboard numbers: useful for
 narrowing candidates, not for a final call.
 
-The fifth row, TheWhisper (TheStageAI), isn't a Murmur engine — there's no
-Swift/CoreML path for it that doesn't require an account and API token for
-TheStageAI's proprietary AppleSDK (https://app.thestage.ai), which is a
-vendor decision this script doesn't make for you. Instead it runs the same
-public checkpoint (TheStageAI/thewhisper-large-v3-turbo) through plain
-`transformers` on CPU/MPS, so its WER is comparable but its latency/RSS are
-not (no ANE acceleration). Needs a separate venv:
+The fifth and sixth rows aren't Murmur engines — both run through a separate
+venv/subprocess rather than the app binary, so their WER is comparable to
+the four rows above but their latency/RSS are not (no ANE acceleration):
+
+- TheWhisper (TheStageAI) — no Swift/CoreML path that doesn't require an
+  account and API token for TheStageAI's proprietary AppleSDK
+  (https://app.thestage.ai), which is a vendor decision this script doesn't
+  make for you. Runs the public checkpoint (TheStageAI/thewhisper-large-v3-
+  turbo) through plain `transformers` on CPU/MPS instead.
     python3.12 -m venv .venv-thewhisper
     .venv-thewhisper/bin/pip install torch transformers soundfile
-Missing that venv just skips the row — the other four still run.
+- sherpa-onnx (k2-fsa) — Apache-2.0/MIT, unlike TheWhisper this one *does*
+  ship official Swift bindings (iOS/macOS) with no account gate, so if its
+  accuracy clears the bar it's a real engine candidate, not just a WER
+  screen. Runs SenseVoice small (Alibaba's multilingual ONNX model) via the
+  sherpa-onnx Python bindings.
+    python3.12 -m venv .venv-sherpa
+    .venv-sherpa/bin/pip install sherpa-onnx soundfile numpy
+
+Missing either venv just skips that row — the rest still run.
 
 Usage:
     ./scripts/benchmark_engines.py [--app path/to/Murmur.app]
     ./scripts/benchmark_engines.py --thewhisper-python .venv-thewhisper/bin/python
+    ./scripts/benchmark_engines.py --sherpa-python .venv-sherpa/bin/python
 """
 import argparse
 import re
@@ -94,10 +105,11 @@ def run_once(binary: Path, audio_file: Path, engine: str, model: Optional[str]):
     return formatted, elapsed, peak_rss_mb
 
 
-def run_thewhisper(python_bin: Path, audio_files: List[Path]):
-    """Runs the TheWhisper worker (a separate venv/process — see the module
-    docstring) and returns (texts, latencies), or None if it can't run."""
-    worker = Path(__file__).resolve().parent / "_thewhisper_worker.py"
+def run_worker(python_bin: Path, worker: Path, audio_files: List[Path]):
+    """Runs a candidate-engine worker script (a separate venv/process — see
+    the module docstring) and returns (texts, latencies), or None if it
+    can't run. Shared by TheWhisper and sherpa-onnx, which both speak the
+    same `TEXT: ...\\tLATENCY: ...` stdout protocol."""
     try:
         result = subprocess.run(
             [str(python_bin), str(worker), *(str(f) for f in audio_files)],
@@ -105,7 +117,7 @@ def run_thewhisper(python_bin: Path, audio_files: List[Path]):
     except FileNotFoundError:
         return None
     if result.returncode != 0:
-        print(f"  TheWhisper worker failed ({python_bin}):", file=sys.stderr)
+        print(f"  {worker.name} failed ({python_bin}):", file=sys.stderr)
         print(result.stderr[-2000:], file=sys.stderr)
         return None
 
@@ -118,7 +130,7 @@ def run_thewhisper(python_bin: Path, audio_files: List[Path]):
         texts.append(text)
         latencies.append(float(latency_str))
     if len(texts) != len(audio_files):
-        print(f"  TheWhisper worker returned {len(texts)} results for "
+        print(f"  {worker.name} returned {len(texts)} results for "
               f"{len(audio_files)} inputs (expected 1:1); skipping.",
               file=sys.stderr)
         return None
@@ -134,6 +146,10 @@ def main():
         "--thewhisper-python", default=".venv-thewhisper/bin/python",
         help="Python interpreter with TheWhisper's deps installed "
              "(default: .venv-thewhisper/bin/python). Skipped if missing.")
+    parser.add_argument(
+        "--sherpa-python", default=".venv-sherpa/bin/python",
+        help="Python interpreter with sherpa-onnx's deps installed "
+             "(default: .venv-sherpa/bin/python). Skipped if missing.")
     args = parser.parse_args()
 
     binary = Path(args.app) / "Contents/MacOS/Murmur"
@@ -186,35 +202,40 @@ def main():
                 "avg_rss_mb": sum(rss_values) / len(rss_values) if rss_values else None,
             })
 
-    thewhisper_python = Path(args.thewhisper_python)
-    label = "thewhisper/large-v3-turbo*"
-    print(f"\n=== {label} ===")
-    if not thewhisper_python.exists():
-        print(f"  no venv at {thewhisper_python} — skipping (see module "
-              f"docstring to set one up)")
-    else:
+    worker_candidates = [
+        ("thewhisper/large-v3-turbo*", Path(args.thewhisper_python),
+         Path(__file__).resolve().parent / "_thewhisper_worker.py"),
+        ("sherpa-onnx/sense-voice-small*", Path(args.sherpa_python),
+         Path(__file__).resolve().parent / "_sherpa_onnx_worker.py"),
+    ]
+    for label, python_bin, worker in worker_candidates:
+        print(f"\n=== {label} ===")
+        if not python_bin.exists():
+            print(f"  no venv at {python_bin} — skipping (see module "
+                  f"docstring to set one up)")
+            continue
         print("  loading (downloads the model on first run)...")
-        outcome = run_thewhisper(thewhisper_python, audio_files)
+        outcome = run_worker(python_bin, worker, audio_files)
         if outcome is None:
             print("  skipped — see stderr above")
-        else:
-            texts, latencies = outcome
-            wers = [word_error_rate(s, t) for s, t in zip(TEST_SENTENCES, texts)]
-            for text, wer, elapsed in zip(texts, wers, latencies):
-                print(f"  {elapsed:5.2f}s  WER {wer*100:5.1f}%  -> {text!r}")
-            rows.append({
-                "label": label,
-                "avg_wer": sum(wers) / len(wers) * 100,
-                "avg_latency": sum(latencies) / len(latencies),
-                "avg_rss_mb": None,
-            })
+            continue
+        texts, latencies = outcome
+        wers = [word_error_rate(s, t) for s, t in zip(TEST_SENTENCES, texts)]
+        for text, wer, elapsed in zip(texts, wers, latencies):
+            print(f"  {elapsed:5.2f}s  WER {wer*100:5.1f}%  -> {text!r}")
+        rows.append({
+            "label": label,
+            "avg_wer": sum(wers) / len(wers) * 100,
+            "avg_latency": sum(latencies) / len(latencies),
+            "avg_rss_mb": None,
+        })
 
     if not rows:
-        raise SystemExit("Nothing ran — no Murmur binary and no TheWhisper venv.")
+        raise SystemExit("Nothing ran — no Murmur binary and no candidate venvs.")
 
-    print("\n* thewhisper runs via plain `transformers` on CPU/MPS, not "
-          "CoreML/ANE through a Swift engine — its WER is comparable to the "
-          "rows above, its latency/RSS are not.")
+    print("\n* runs via a separate Python venv/subprocess, not a real Swift "
+          "engine — its WER is comparable to the rows above, its "
+          "latency/RSS are not (no ANE acceleration).")
     width = max(16, max(len(row["label"]) for row in rows) + 2)
     total = width + 40
     print("\n" + "=" * total)
