@@ -105,8 +105,8 @@ struct MurmurMain {
             }
 
         case .edit(let text):
-            // Runs the exact same pipeline stopAndTranscribe() does for a
-            // default (no per-app override) dictation — real persisted
+            // Explicitly requests the rewrite pass, even in fast dictation mode.
+            // Uses the same rewrite instructions as live dictation — real persisted
             // Voice Profile included — rather than a synthetic instruction
             // string, so this reproduces field reports faithfully instead
             // of a simplified stand-in. --template opts into a specific
@@ -123,7 +123,8 @@ struct MurmurMain {
                 NoteTemplateStore.all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
             }
             guard let instructions = RewritePlan.instructions(
-                template: template, style: StyleSettings.defaultStyle, voice: voice)
+                template: template, style: StyleSettings.defaultStyle, voice: voice,
+                automaticCleanup: true)
             else {
                 print(text)
                 exit(0)

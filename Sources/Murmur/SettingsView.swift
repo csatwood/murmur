@@ -23,6 +23,7 @@ struct SettingsPage: View {
     @State private var microphoneUID = Settings.microphoneUID
     @State private var microphones = AudioRecorder.inputMicrophones()
     @State private var supportedLocaleIDs: [String] = []
+    @State private var automaticAICleanup = Settings.automaticAICleanup
     @State private var handsFreeAutoStop = Settings.handsFreeAutoStop
     /// Which `AccentFieldSelect` (by its `id`) has its panel open, if any.
     /// Lifted up to the whole page rather than owned by each dropdown —
@@ -244,6 +245,13 @@ struct SettingsPage: View {
             fieldRow(label: "Microphone", detail: "Applies to the next recording. System default follows macOS Sound settings.") {
                 AccentFieldSelect(
                     id: "microphone", label: microphoneLabel(microphoneUID), openID: $openDropdown)
+            }
+            fieldRow(label: "Automatic AI cleanup",
+                     detail: "Off is faster: punctuation and basic cleanup stay on. Chosen styles and templates still use AI.") {
+                WarmToggle(isOn: $automaticAICleanup)
+                    .onChange(of: automaticAICleanup) { _, value in
+                        Settings.automaticAICleanup = value
+                    }
             }
             fieldRow(label: "Dictation key") {
                 AccentFieldSelect(

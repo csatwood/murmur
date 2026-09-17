@@ -892,7 +892,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                         // price of one round-trip.
                         if let instructions = RewritePlan.instructions(
                             template: template, style: style,
-                            voice: Settings.useVoiceProfile ? voiceProfile : nil),
+                            voice: Settings.useVoiceProfile ? voiceProfile : nil,
+                            automaticCleanup: Settings.automaticAICleanup),
                            !body.isEmpty {
                             // "Applying As spoken style…" read oddly once
                             // this became the always-on default cleanup pass
@@ -1173,6 +1174,12 @@ enum AppearanceSetting: String, CaseIterable, Identifiable {
 
 enum Settings {
     private static let defaults = UserDefaults.standard
+
+    /// Fast dictation is the default; explicit styles and templates still use AI.
+    static var automaticAICleanup: Bool {
+        get { defaults.bool(forKey: "automaticAICleanup") }
+        set { defaults.set(newValue, forKey: "automaticAICleanup") }
+    }
 
     /// Empty means follow the macOS default input at each recording.
     static var microphoneUID: String {

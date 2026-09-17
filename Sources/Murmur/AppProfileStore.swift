@@ -175,11 +175,11 @@ enum AppProfileStore {
         check(RewritePlan.instructions(template: template, style: .raw) == nil,
               "Raw overrides even an app's own template")
 
-        // Default cleanup: "As spoken" used to mean no rewrite pass ran at
-        // all. It now means a cleanup-only pass — filler/false-start
-        // removal and grammar, no tone shift.
-        let cleanupOnly = RewritePlan.instructions(template: nil, style: .none)
-        check(cleanupOnly != nil, "no template + no tone still runs a cleanup pass")
+        // Fast dictation skips AI; automatic cleanup remains an explicit opt-in.
+        check(RewritePlan.instructions(template: nil, style: .none) == nil,
+              "fast dictation skips automatic AI cleanup")
+        let cleanupOnly = RewritePlan.instructions(template: nil, style: .none, automaticCleanup: true)
+        check(cleanupOnly != nil, "automatic cleanup opt-in runs a cleanup pass")
         check(cleanupOnly?.contains("false starts") == true,
               "default pass targets what TextFormatter's regex can't")
         check(cleanupOnly?.localizedCaseInsensitiveContains("formal") == false
@@ -197,6 +197,10 @@ enum AppProfileStore {
         let voice = VoiceProfile(
             title: "Habit Architect", summary: "Detailed and precise.",
             traits: ["Detailed", "Frequent pauses"], wordCountAtGeneration: 100)
+        check(RewritePlan.instructions(template: nil, style: .none, voice: voice) == nil,
+              "voice profile alone does not enable AI in fast dictation")
+        check(RewritePlan.instructions(template: template, style: .raw, automaticCleanup: true) == nil,
+              "Raw still skips AI when automatic cleanup is enabled")
         check(RewritePlan.instructions(template: nil, style: .raw, voice: voice) == nil,
               "voice never overrides Raw into running a pass")
         let voiced = RewritePlan.instructions(
@@ -212,8 +216,7 @@ enum AppProfileStore {
 // MARK: - Instruction composition
 
 enum RewritePlan {
-    /// The baseline pass every non-Raw dictation gets when nothing else
-    /// applies. `TextFormatter` already strips a fixed list of standalone
+    /// The optional baseline pass for As spoken dictation. `TextFormatter` already strips a fixed list of standalone
     /// filler tokens ("um", "uh", …) deterministically before this ever
     /// runs — this covers what regex can't: phrasal filler ("you know",
     /// "like", "I mean"), false starts and self-corrections, stumbled or
@@ -244,10 +247,9 @@ enum RewritePlan {
     /// structure, the style governs tone — without paying for a second
     /// round-trip through the model.
     ///
-    /// Returns `nil` only for Raw, which means "don't touch my words at
-    /// all" — terminals and code editors, where even cleanup would be
-    /// corruption. Every other style always returns instructions now: at
-    /// minimum the cleanup baseline above.
+    /// Raw always skips AI. As spoken without a template also skips AI
+    /// unless automatic cleanup is enabled. Explicit tones and templates
+    /// retain their single combined rewrite pass.
     ///
     /// Template instructions are deliberately left as the sole primary
     /// instruction when a template is set, rather than layered under the
@@ -260,7 +262,8 @@ enum RewritePlan {
     /// pass on its own — Raw is unaffected by it either way — it only
     /// colours a pass that was already going to happen.
     static func instructions(
-        template: NoteTemplate?, style: WritingStyle, voice: VoiceProfile? = nil
+        template: NoteTemplate?, style: WritingStyle, voice: VoiceProfile? = nil,
+        automaticCleanup: Bool = false
     ) -> String? {
         guard !style.skipsAllProcessing else { return nil }
 
@@ -268,6 +271,7 @@ enum RewritePlan {
         let base: String
         switch (template, tone) {
         case (nil, nil):
+            guard automaticCleanup else { return nil }
             base = cleanupInstructions
         case (nil, let tone?):
             base = cleanupInstructions + """
