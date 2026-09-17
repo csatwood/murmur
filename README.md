@@ -3,6 +3,11 @@
 **Private, unlimited voice dictation for macOS — 100% on-device.**
 
 Hold `fn`, speak, release — clean text appears at your cursor in any app.
+Choose your microphone in **Settings → Dictation → Microphone**. The default
+is **System default**, which follows macOS Sound settings at the start of each
+recording. A selected device is remembered across restarts; reconnect it or
+choose another if it becomes unavailable. For Bluetooth playback without
+headset microphone mode switching, select a built-in or USB microphone.
 No cloud, no subscription, no word limits. Your audio and transcripts never
 leave your Mac.
 

@@ -1174,6 +1174,12 @@ enum AppearanceSetting: String, CaseIterable, Identifiable {
 enum Settings {
     private static let defaults = UserDefaults.standard
 
+    /// Empty means follow the macOS default input at each recording.
+    static var microphoneUID: String {
+        get { defaults.string(forKey: "microphoneUID") ?? "" }
+        set { defaults.set(newValue, forKey: "microphoneUID") }
+    }
+
     /// One-time import of preferences saved under the app's pre-rename
     /// bundle id (local.whisperflow). Call before anything reads Settings.
     static func migrateLegacyDefaults() {

@@ -12,7 +12,7 @@ import Foundation
 /// - A warm always-on engine with a pre-roll ring buffer: wedged the engine
 ///   so recording never started.
 final class AudioRecorder {
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var file: AVAudioFile?
     private(set) var currentFileURL: URL?
     private(set) var isRecording = false
@@ -80,18 +80,11 @@ final class AudioRecorder {
     func start() throws {
         guard !isRecording else { return }
 
+        // Recreate between recordings so changing devices cannot retain the
+        // previous input node's format or hardware route.
+        engine = AVAudioEngine()
         let input = engine.inputNode
-        // Pin to the built-in mic rather than trusting whatever the system's
-        // current default input is. A Bluetooth headset's default input sits
-        // in high-quality output-only mode (A2DP) until something asks for
-        // input, at which point macOS switches it into a lower-quality
-        // bidirectional mode (HFP) — a real hardware renegotiation. That
-        // switch is what visibly ducks whatever else is playing, and it can
-        // take longer than a quick hold-to-talk press: the recording ends
-        // before the mic ever delivers a frame, so every dictation silently
-        // came back empty. Best-effort — a Mac with no built-in mic just
-        // keeps using the system default, same as before.
-        preferBuiltInMicrophone(on: input)
+        try selectMicrophone(on: input)
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(
@@ -222,58 +215,87 @@ final class AudioRecorder {
 
     // MARK: - Device selection
 
-    /// Overrides the input node's hardware device via Core Audio, entirely
-    /// best-effort: any failure along the way just leaves the node on
-    /// whatever the system default already was.
-    private func preferBuiltInMicrophone(on input: AVAudioInputNode) {
-        guard let unit = input.audioUnit else {
-            dictationLog.error("mic route: no input AudioUnit yet")
-            return
-        }
-        guard var deviceID = Self.builtInInputDeviceID() else {
-            dictationLog.info("mic route: no built-in mic found, using system default")
-            return
-        }
-        let status = AudioUnitSetProperty(
-            unit, kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global, 0,
-            &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
-        dictationLog.info(
-            "mic route: pin to built-in device \(deviceID) -> status \(status)")
+    struct Microphone: Identifiable {
+        let deviceID: AudioDeviceID
+        let id: String // Persistent Core Audio UID, not the session's numeric ID.
+        let name: String
     }
 
-    private static func builtInInputDeviceID() -> AudioDeviceID? {
+    static func inputMicrophones() -> [Microphone] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
-        var dataSize: UInt32 = 0
+        var size: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize) == noErr,
-            dataSize > 0
-        else { return nil }
-
-        let count = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: count)
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr,
+            size > 0 else { return [] }
+        var ids = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
         guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil,
-            &dataSize, &deviceIDs) == noErr
-        else { return nil }
-
-        return deviceIDs.first { isBuiltIn($0) && hasInputStreams($0) }
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &ids) == noErr
+        else { return [] }
+        return ids.filter { hasInputStreams($0) }.compactMap { deviceID in
+            guard let uid = deviceString(deviceID, selector: kAudioDevicePropertyDeviceUID),
+                  !uid.isEmpty else { return nil }
+            return Microphone(
+                deviceID: deviceID, id: uid,
+                name: deviceString(deviceID, selector: kAudioObjectPropertyName) ?? "Microphone")
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    private static func isBuiltIn(_ deviceID: AudioDeviceID) -> Bool {
+    private static func deviceString(_ deviceID: AudioDeviceID,
+                                     selector: AudioObjectPropertySelector) -> String? {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyTransportType,
+            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr
+        else { return nil }
+        return value?.takeRetainedValue() as String?
+    }
+
+    static func resolveMicrophone(
+        uid: String, devices: [Microphone], defaultDeviceID: AudioDeviceID
+    ) throws -> AudioDeviceID {
+        if uid.isEmpty {
+            guard devices.contains(where: { $0.deviceID == defaultDeviceID }) else {
+                throw microphoneError("No system default microphone is available.")
+            }
+            return defaultDeviceID
+        }
+        guard let device = devices.first(where: { $0.id == uid }) else {
+            throw microphoneError(
+                "The selected microphone is unavailable. Reconnect it or choose another in Settings → Dictation.")
+        }
+        return device.deviceID
+    }
+
+    private static func microphoneError(_ message: String) -> NSError {
+        NSError(domain: "Murmur", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    private func selectMicrophone(on input: AVAudioInputNode) throws {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
-        var transportType: UInt32 = 0
-        var size = UInt32(MemoryLayout<UInt32>.size)
-        guard AudioObjectGetPropertyData(
-            deviceID, &address, 0, nil, &size, &transportType) == noErr
-        else { return false }
-        return transportType == kAudioDeviceTransportTypeBuiltIn
+        var defaultID = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        _ = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &defaultID)
+        var deviceID = try Self.resolveMicrophone(
+            uid: Settings.microphoneUID, devices: Self.inputMicrophones(), defaultDeviceID: defaultID)
+        guard let unit = input.audioUnit else {
+            throw Self.microphoneError("Could not open the selected microphone.")
+        }
+        let status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+            &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard status == noErr else {
+            throw Self.microphoneError("Could not select the microphone (audio error \(status)).")
+        }
+        dictationLog.info("mic route: selected device \(deviceID)")
     }
 
     /// A device can be built-in and output-only (the Mac's speakers) — this
@@ -297,6 +319,22 @@ final class AudioRecorder {
             if !ok { passed = false }
             print("\(ok ? "PASS" : "FAIL"): \(label)")
         }
+
+        let devices = [
+            Microphone(deviceID: 11, id: "builtin", name: "Built-in"),
+            Microphone(deviceID: 22, id: "usb", name: "USB")
+        ]
+        check((try? resolveMicrophone(uid: "", devices: devices, defaultDeviceID: 22)) == 22,
+              "system default uses external input instead of forcing built-in")
+        check((try? resolveMicrophone(uid: "builtin", devices: devices, defaultDeviceID: 22)) == 11,
+              "explicit microphone overrides system default")
+        check((try? resolveMicrophone(uid: "usb", devices: [
+            Microphone(deviceID: 33, id: "usb", name: "USB")
+        ], defaultDeviceID: 11)) == 33, "saved UID survives device ID changes")
+        check((try? resolveMicrophone(uid: "missing", devices: devices, defaultDeviceID: 22)) == nil,
+              "disconnected selection fails instead of recording another microphone")
+        check((try? resolveMicrophone(uid: "", devices: [], defaultDeviceID: 0)) == nil,
+              "no input device fails clearly")
 
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 16000,

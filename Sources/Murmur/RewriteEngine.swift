@@ -5,6 +5,31 @@ import FoundationModels
 /// (Apple Intelligence). Powers Style and Transforms — no cloud involved.
 final class RewriteEngine {
 
+    static func runSchemaSelfTest() -> Bool {
+        let sample = "A quote: \"hello\".\nCafé."
+        do {
+            let content = GeneratedContent(properties: ["text": sample])
+            let result = try EditedText(content)
+            guard result.text == sample,
+                  try result.generatedContent.value(String.self, forProperty: "text") == sample
+            else { print("FAIL: structured editing preserves text"); return false }
+            print("PASS: structured editing preserves quoted, multiline and Unicode text")
+            guard (try? EditedText(GeneratedContent(json: "{}"))) == nil else {
+                print("FAIL: structured editing requires text"); return false
+            }
+            print("PASS: structured editing rejects a missing text field")
+            guard (try? EditedText(GeneratedContent(json: "{\"text\":42}"))) == nil else {
+                print("FAIL: structured editing rejects non-text output"); return false
+            }
+            print("PASS: structured editing rejects non-text output")
+            _ = try JSONEncoder().encode(EditedText.generationSchema)
+            return true
+        } catch {
+            print("FAIL: structured editing schema: \(error)")
+            return false
+        }
+    }
+
     var isAvailable: Bool {
         SystemLanguageModel.default.availability == .available
     }
@@ -155,9 +180,24 @@ final class RewriteEngine {
 
 /// Structured-generation target for `edit(_:instructions:)` — see that
 /// method's doc comment for why this exists instead of free-form text.
-@Generable
-private struct EditedText {
+// Explicit conformance keeps command-line-tools builds independent of
+// Xcode's FoundationModelsMacros plugin. Keep the same required text field.
+private struct EditedText: Generable {
     let text: String
+
+    init(_ content: GeneratedContent) throws {
+        text = try content.value(String.self, forProperty: "text")
+    }
+
+    static var generationSchema: GenerationSchema {
+        GenerationSchema(type: Self.self, properties: [
+            GenerationSchema.Property(name: "text", type: String.self)
+        ])
+    }
+
+    var generatedContent: GeneratedContent {
+        GeneratedContent(properties: ["text": text])
+    }
 }
 
 // MARK: - Styles (per-app tone, like Wispr Flow's Style feature)

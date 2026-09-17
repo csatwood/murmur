@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-swift build -c release
+swift build -c release "$@"
 
 APP="build/Murmur.app"
 rm -rf "$APP"
@@ -16,10 +16,8 @@ cp .build/release/Murmur "$APP/Contents/MacOS/Murmur"
 # SwiftPM's generated Murmur_Murmur.bundle, which it expects at the .app's
 # top level — codesign won't seal resources living outside Contents/, and
 # fails to verify. FontLoader checks Bundle.main (this location) first.
-if [ -d ".build/release/Murmur_Murmur.bundle/Fonts" ]; then
-    mkdir -p "$APP/Contents/Resources/Fonts"
-    cp .build/release/Murmur_Murmur.bundle/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
-fi
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp Sources/Murmur/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 
 # App icon (source: Resources/Murmur.svg — rerun scripts/make_icon.sh to
 # regenerate Resources/Murmur.icns after changing the SVG).
@@ -46,7 +44,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key>
     <string>2.1.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>4.1</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>LSUIElement</key>

@@ -69,9 +69,10 @@ struct MurmurMain {
             let askPassed = AskMurmur.runSelfTest()
             let profilesPassed = AppProfileStore.runSelfTest()
             let audioPassed = AudioRecorder.runSelfTest()
+            let editingSchemaPassed = RewriteEngine.runSchemaSelfTest()
             let hallucinationPassed = HallucinationFilter.runSelfTest()
             exit(formatterPassed && learnedPassed && templatesPassed && askPassed
-                 && profilesPassed && audioPassed && hallucinationPassed ? 0 : 1)
+                 && profilesPassed && audioPassed && editingSchemaPassed && hallucinationPassed ? 0 : 1)
 
         case .format(let text):
             // Same pipeline as live dictation: format, apply learned

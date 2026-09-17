@@ -1,5 +1,12 @@
 # Changelog
 
+## Local microphone selection patch
+
+- Add Settings → Dictation → Microphone with System default and connected inputs.
+- Follow the system input by default instead of forcing the built-in microphone.
+- Remember explicit devices across restarts and report disconnected selections.
+- Keep the existing structured text response schema buildable without Xcode macro plugins.
+
 ## Unreleased
 
 ### New

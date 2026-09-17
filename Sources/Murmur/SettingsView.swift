@@ -20,6 +20,8 @@ import SwiftUI
 
 struct SettingsPage: View {
     @ObservedObject var app: AppDelegate
+    @State private var microphoneUID = Settings.microphoneUID
+    @State private var microphones = AudioRecorder.inputMicrophones()
     @State private var supportedLocaleIDs: [String] = []
     @State private var handsFreeAutoStop = Settings.handsFreeAutoStop
     /// Which `AccentFieldSelect` (by its `id`) has its panel open, if any.
@@ -72,7 +74,13 @@ struct SettingsPage: View {
                 }
             }
         }
-        .onAppear(perform: loadLocales)
+        .onAppear {
+            loadLocales()
+            microphones = AudioRecorder.inputMicrophones()
+        }
+        .onChange(of: openDropdown) { _, value in
+            if value == "microphone" { microphones = AudioRecorder.inputMicrophones() }
+        }
     }
 
     private var header: some View {
@@ -233,6 +241,10 @@ struct SettingsPage: View {
 
     private var dictationSection: some View {
         VStack(spacing: 0) {
+            fieldRow(label: "Microphone", detail: "Applies to the next recording. System default follows macOS Sound settings.") {
+                AccentFieldSelect(
+                    id: "microphone", label: microphoneLabel(microphoneUID), openID: $openDropdown)
+            }
             fieldRow(label: "Dictation key") {
                 AccentFieldSelect(
                     id: "hotkey", label: app.hotkey.displayName, openID: $openDropdown)
@@ -312,6 +324,10 @@ struct SettingsPage: View {
     /// anyway.
     private func dropdownOptions(for id: String) -> [String] {
         switch id {
+        case "microphone":
+            var ids = [""] + microphones.map(\.id)
+            if !ids.contains(microphoneUID) { ids.append(microphoneUID) }
+            return ids
         case "hotkey": return HotkeyMonitor.Hotkey.allCases.map(\.rawValue)
         case "engine": return ["apple", "whisper", "whispercpp", "parakeet"]
         case "whisperModel": return WhisperEngine.availableModels.map(\.id)
@@ -322,8 +338,14 @@ struct SettingsPage: View {
         }
     }
 
+    private func microphoneLabel(_ uid: String) -> String {
+        if uid.isEmpty { return "System default" }
+        return microphones.first { $0.id == uid }?.name ?? "Selected microphone (unavailable)"
+    }
+
     private func dropdownLabel(for id: String) -> (String) -> String {
         switch id {
+        case "microphone": return microphoneLabel
         case "hotkey":
             return { raw in HotkeyMonitor.Hotkey(rawValue: raw)?.displayName ?? raw }
         case "engine": return engineLabel
@@ -341,6 +363,11 @@ struct SettingsPage: View {
 
     private func dropdownSelection(for id: String) -> Binding<String> {
         switch id {
+        case "microphone":
+            return Binding(get: { microphoneUID }, set: {
+                microphoneUID = $0
+                Settings.microphoneUID = $0
+            })
         case "hotkey":
             return Binding(
                 get: { app.hotkey.rawValue },
