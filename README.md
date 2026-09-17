@@ -16,7 +16,7 @@ speech and language models, with an optional local Whisper engine.
 
 - **Push-to-talk dictation** — hold `fn` (or right ⌥) anywhere; release to
   paste at your cursor. Double-tap for hands-free mode.
-- **Four recognition engines**, all offline:
+- **Five recognition engines**, all offline:
   - **Apple** — instant, built into macOS (SpeechAnalyzer, macOS 26).
   - **WhisperKit** — precision engine via
     [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML on the
@@ -28,6 +28,12 @@ speech and language models, with an optional local Whisper engine.
   - **Parakeet** — NVIDIA's model via
     [FluidAudio](https://github.com/FluidInference/FluidAudio) (CoreML on
     the Neural Engine). Murmur's fastest engine; no vocabulary biasing yet.
+  - **sherpa-onnx** — SenseVoice, NVIDIA Canary, or two LLM-backed models
+    (FunASR Nano, Qwen3-ASR — a small generative decoder rather than a
+    direct CTC/transducer decode, still fully local) via
+    [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (ONNX
+    Runtime, CPU only — no Neural Engine backend). Experimental: English
+    only for now, less tested than the four engines above.
 - **Harper grammar pass** — [Harper](https://github.com/Automattic/harper)
   runs alongside the Apple Intelligence edit pass below: deterministic,
   millisecond-speed local linting (agreement, punctuation, repeated words)
@@ -125,18 +131,20 @@ Whisper/Parakeet model), cleanup, tone rewriting (Apple Intelligence), and
 the Voice Profile analysis. Murmur makes no network requests except the
 one-time model downloads by macOS itself (Apple speech assets) and, if you
 opt into a non-Apple engine, that model's own one-time fetch (Hugging Face
-for Whisper, FluidAudio's own CDN for Parakeet). Dictation data is stored
-only in `~/Library/Application Support/Murmur/`.
+for Whisper, FluidAudio's own CDN for Parakeet, GitHub Releases for
+sherpa-onnx). Dictation data is stored only in
+`~/Library/Application Support/Murmur/`.
 
 ## Architecture
 
 Swift Package. WhisperKit and FluidAudio are remote SwiftPM dependencies,
-each used only if you pick that engine; whisper.cpp/ggml and Harper are
-vendored as prebuilt xcframeworks under `Vendor/` (Harper's Rust source is
-included, whisper.cpp's isn't — see [NOTICE.md](NOTICE.md) for both).
+each used only if you pick that engine; whisper.cpp/ggml, Harper, and
+sherpa-onnx (plus its ONNX Runtime dependency) are vendored as prebuilt
+xcframeworks under `Vendor/` (Harper's Rust source is included, the
+others' isn't — see [NOTICE.md](NOTICE.md) for all of them).
 
 ```
-HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whisper.cpp / Parakeet)
+HotkeyMonitor  →  AudioRecorder  →  Transcriber (Apple / WhisperKit / whisper.cpp / Parakeet / sherpa-onnx)
                                         ↓
      TextFormatter → LearnedStore → SnippetStore → RewriteEngine (Styles) → HarperChecker
                                         ↓

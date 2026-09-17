@@ -25,15 +25,39 @@ struct AppProfile: Codable, Equatable {
     /// pinning one — set `true`/`false` only to override that guess for
     /// this specific app, in either direction.
     var developerVocabulary: Bool?
+    /// `nil` inherits the global auto-paste setting. Set `false` only for
+    /// an app where you'd rather review a dictation on the clipboard before
+    /// it lands — e.g. a form field where a stray paste is hard to undo.
+    var autoPaste: Bool?
+    /// `nil` inherits the global recognition engine (`Settings.engine`).
+    /// Set to run a specific app through a different engine than
+    /// everywhere else — e.g. the fastest engine for chat apps, the most
+    /// accurate for long-form writing.
+    var engine: String?
+    /// `nil` inherits the global model for whichever engine is actually in
+    /// effect (this profile's own `engine` override if set, else
+    /// `Settings.engine`) — `Settings.whisperModel`/`.whisperCppModel`/
+    /// `.parakeetModel`/`.sherpaModel` depending on which. Set to pick a
+    /// specific model within that engine for this app — e.g. sherpa-onnx's
+    /// Canary specifically, not whichever sherpa-onnx model happens to be
+    /// selected globally. Meaningless (and not offered) for the Apple
+    /// engine, which has no model choice.
+    var model: String?
+    /// `nil` inherits the global dictation language (`Settings
+    /// .localeIdentifier`). Set to dictate in a different language into a
+    /// specific app without switching your everywhere-else language back
+    /// and forth — e.g. Spanish into WhatsApp, English elsewhere.
+    var localeIdentifier: String?
 
-    /// A profile with none of the four set does nothing; used to prune
-    /// empties. A hotkey-only profile (everything else nil) is still
+    /// A profile with none of the fields below set does nothing; used to
+    /// prune empties. A hotkey-only profile (everything else nil) is still
     /// meaningful — pressing it forces resolution to this bundle ID, which
     /// without any other override just falls back to the global defaults —
-    /// so it must survive pruning just like the other halves.
+    /// so it must survive pruning just like the other fields.
     var isEmpty: Bool {
         style == nil && templateID == nil && hotkeySlot == nil
-            && developerVocabulary == nil
+            && developerVocabulary == nil && autoPaste == nil
+            && engine == nil && model == nil && localeIdentifier == nil
     }
 }
 
@@ -65,6 +89,57 @@ enum AppProfileStore {
     static func profile(forBundleID bundleID: String?) -> AppProfile? {
         guard let bundleID else { return nil }
         return profiles[bundleID]
+    }
+
+    // MARK: - Site rules
+    //
+    // A site rule ("this profile applies to mail.google.com, not just
+    // Chrome generally") reuses the exact same `[String: AppProfile]` store
+    // instead of a second dictionary keyed a different way — its "bundle
+    // ID" is a synthetic `"site:<url substring>"` string that every
+    // resolver below (`style(forBundleID:)`, `template(forBundleID:)`, …)
+    // already treats as an opaque dictionary key, so none of them needed
+    // to change. The one new piece is `siteProfileKey(forURL:)`, called
+    // from `AppDelegate.stopAndTranscribe()` to substitute this synthetic
+    // key in for the browser's own real bundle ID when the active tab
+    // matches — everywhere downstream then resolves against the site
+    // profile exactly as if it were a normal app profile.
+
+    private static let sitePrefix = "site:"
+
+    static func isSiteKey(_ bundleID: String) -> Bool {
+        bundleID.hasPrefix(sitePrefix)
+    }
+
+    static func sitePattern(forKey bundleID: String) -> String? {
+        guard isSiteKey(bundleID) else { return nil }
+        return String(bundleID.dropFirst(sitePrefix.count))
+    }
+
+    static func siteKey(forPattern pattern: String) -> String { sitePrefix + pattern }
+
+    /// Cheap existence check so `stopAndTranscribe()` can skip reading the
+    /// browser's active tab URL entirely (an AppleScript round-trip) for
+    /// the common case where no one has set up a site rule.
+    static var hasSiteProfiles: Bool {
+        profiles.keys.contains { isSiteKey($0) }
+    }
+
+    /// The synthetic bundle-ID key of the first site rule whose pattern is
+    /// a substring of `url`, if any — case-insensitive, since a URL's
+    /// scheme/host casing isn't meaningful to match against. Iteration
+    /// order over site rules isn't guaranteed if more than one pattern
+    /// matches the same URL; treated the same as `ProfileHotkeySlot`'s own
+    /// "first match wins, don't promise more" house style.
+    static func siteProfileKey(forURL url: String) -> String? {
+        let lowered = url.lowercased()
+        for (bundleID, _) in profiles {
+            guard let pattern = sitePattern(forKey: bundleID), !pattern.isEmpty,
+                  lowered.contains(pattern.lowercased())
+            else { continue }
+            return bundleID
+        }
+        return nil
     }
 
     /// The tone to use for an app: its own override, else Raw if this is a
@@ -108,6 +183,41 @@ enum AppProfileStore {
         guard let templateID = profile(forBundleID: bundleID)?.templateID
         else { return nil }
         return NoteTemplateStore.all().first { $0.id == templateID }
+    }
+
+    /// Whether a dictation into this app should auto-paste — the profile's
+    /// own override if set, else the global default.
+    static func autoPasteEnabled(forBundleID bundleID: String?) -> Bool {
+        profile(forBundleID: bundleID)?.autoPaste ?? Settings.autoPasteEnabled
+    }
+
+    /// The recognition engine to use for this app — the profile's own
+    /// override if set, else the global default (`Settings.engine`).
+    static func engine(forBundleID bundleID: String?) -> String {
+        profile(forBundleID: bundleID)?.engine ?? Settings.engine
+    }
+
+    /// The model to use for this app, within whichever engine is actually
+    /// in effect (`engine(forBundleID:)`) — the profile's own override if
+    /// set, else that engine's own global model setting. Apple has no
+    /// model concept, so this resolves to `""` for it (never read; every
+    /// call site branches on the engine first).
+    static func model(forBundleID bundleID: String?) -> String {
+        if let override = profile(forBundleID: bundleID)?.model { return override }
+        switch engine(forBundleID: bundleID) {
+        case "whisper": return Settings.whisperModel
+        case "whispercpp": return Settings.whisperCppModel
+        case "parakeet": return Settings.parakeetModel
+        case "sherpa": return Settings.sherpaModel
+        default: return ""
+        }
+    }
+
+    /// The dictation language to use for this app — the profile's own
+    /// override if set, else the global default
+    /// (`Settings.localeIdentifier`).
+    static func localeIdentifier(forBundleID bundleID: String?) -> String {
+        profile(forBundleID: bundleID)?.localeIdentifier ?? Settings.localeIdentifier
     }
 
     // MARK: - Migration

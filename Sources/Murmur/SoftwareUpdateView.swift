@@ -10,13 +10,15 @@ import SwiftUI
 // release (see AppUpdate.swift). Everything on this sheet is real data
 // from that release; nothing here is hardcoded example content.
 //
-// "Update Now" opens the release (its downloadable asset, if one
-// matched) in the browser — it does not download, verify, or install
-// anything itself. Actually replacing the running app bundle in place is
-// a much bigger, riskier feature than this pass's own scope.
+// "Update Now" calls `AppDelegate.installUpdate(_:)`, which downloads and
+// installs the release's `.zip` asset in place and relaunches — see
+// AppInstaller.swift. It falls back to opening the browser only if that
+// isn't possible (no zip asset, or the install fails partway), so this
+// sheet doesn't need its own fallback logic beyond showing progress.
 
 struct SoftwareUpdateSheet: View {
     let update: AppUpdate
+    @ObservedObject var app: AppDelegate
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -93,6 +95,7 @@ struct SoftwareUpdateSheet: View {
                     .buttonStyle(.plain)
                     .font(.manrope(13, .medium))
                     .foregroundStyle(Palette.warmInkSoft)
+                    .disabled(app.updateInstallProgress != nil)
 
                 Spacer()
 
@@ -103,20 +106,31 @@ struct SoftwareUpdateSheet: View {
                 .buttonStyle(.plain)
                 .font(.manrope(13, .medium))
                 .foregroundStyle(Palette.warmInkFaint)
+                .disabled(app.updateInstallProgress != nil)
 
                 Button {
-                    NSWorkspace.shared.open(update.downloadURL)
-                    dismiss()
+                    Task { await app.installUpdate(update) }
                 } label: {
-                    Text("Update Now")
-                        .font(.manrope(13, .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 9)
-                        .background(Palette.sunset, in: Capsule())
-                        .shadow(color: Palette.sunset.opacity(0.28), radius: 12, y: 4)
+                    HStack(spacing: 7) {
+                        if let progress = app.updateInstallProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                            Text(progress)
+                        } else {
+                            Text("Update Now")
+                        }
+                    }
+                    .lineLimit(1)
+                    .font(.manrope(13, .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 9)
+                    .background(Palette.sunset, in: Capsule())
+                    .shadow(color: Palette.sunset.opacity(0.28), radius: 12, y: 4)
                 }
                 .buttonStyle(PressScaleButtonStyle())
+                .disabled(app.updateInstallProgress != nil)
                 .padding(.leading, 10)
             }
         }

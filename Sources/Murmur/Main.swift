@@ -11,6 +11,7 @@ struct MurmurMain {
         var localeIdentifier = "en-US"
         var engineName = "apple"
         var whisperModel = Settings.whisperModel
+        var sherpaModel = Settings.sherpaModel
         var templateName: String?
         var transformID: String?
         var bundleID: String?
@@ -25,6 +26,8 @@ struct MurmurMain {
                 engineName = arguments.next() ?? engineName
             case "--whisper-model":
                 whisperModel = arguments.next() ?? whisperModel
+            case "--sherpa-model":
+                sherpaModel = arguments.next() ?? sherpaModel
             case "--format":
                 guard let text = arguments.next() else { usageAndExit() }
                 mode = .format(text)
@@ -260,6 +263,19 @@ struct MurmurMain {
                         biasTerms: LearnedStore.biasTerms(
                             includeDeveloperVocabulary: developerVocabulary),
                         boostVocabulary: developerVocabulary)
+                } else if engineName == "sherpa" {
+                    let sherpa = SherpaOnnxEngine()
+                    sherpa.onStatus = { status in
+                        if let status {
+                            FileHandle.standardError.write(Data("\(status)\n".utf8))
+                        }
+                    }
+                    raw = try await sherpa.transcribe(
+                        fileAt: URL(fileURLWithPath: path),
+                        model: sherpaModel,
+                        localeID: localeIdentifier,
+                        biasTerms: LearnedStore.biasTerms(
+                            includeDeveloperVocabulary: developerVocabulary))
                 } else {
                     let transcriber = Transcriber(
                         locale: Locale(identifier: localeIdentifier))
@@ -366,8 +382,9 @@ struct MurmurMain {
         Usage:
           Murmur                      run as menu bar app
           Murmur --transcribe <file>  transcribe an audio file
-                                      [--locale en-US] [--engine apple|whisper|whispercpp|parakeet]
+                                      [--locale en-US] [--engine apple|whisper|whispercpp|parakeet|sherpa]
                                       [--whisper-model base|small|large-v3-v20240930_turbo]
+                                      [--sherpa-model sense-voice-small|canary-180m-flash|funasr-nano|qwen3-asr|moonshine-base-en|zipformer-en]
                                       [--bundle-id com.apple.dt.Xcode] to test as
                                       if dictating into that app (developer
                                       vocabulary on/off resolves the same way);

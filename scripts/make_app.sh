@@ -12,6 +12,17 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp .build/release/Murmur "$APP/Contents/MacOS/Murmur"
 
+# sherpa-onnx is the one vendored engine that's a real dynamic framework
+# (whisper.xcframework/harper.xcframework are static, fully linked into the
+# Murmur binary above — nothing further needed for those). SwiftPM resolves
+# it at build time by copying sherpa_onnx.framework next to the built
+# Murmur binary in .build/release/ itself, which is exactly where its own
+# @loader_path rpath expects to find it — so it has to travel with the
+# binary here too, in Contents/MacOS/, not just get left behind in .build/.
+if [ -d ".build/release/sherpa_onnx.framework" ]; then
+    cp -R ".build/release/sherpa_onnx.framework" "$APP/Contents/MacOS/sherpa_onnx.framework"
+fi
+
 # Bundled fonts: copied straight into Contents/Resources rather than
 # SwiftPM's generated Murmur_Murmur.bundle, which it expects at the .app's
 # top level — codesign won't seal resources living outside Contents/, and
@@ -74,6 +85,22 @@ PLIST
 # Ad-hoc is therefore a hard failure, not a silent fallback: one ad-hoc
 # build is enough to invalidate a grant recorded against the certificate.
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "WhisperFlow Dev"; then
+    # Nested dynamic code needs its own signature before the outer app
+    # bundle is sealed. Order matters: libonnxruntime.dylib (a loose
+    # runtime dependency, not the framework's own main binary) needs its
+    # own leaf signature first, since the framework-bundle signature just
+    # below hashes it as a sealed resource — signing the bundle before its
+    # contents are in their final signed state produced a "nested code is
+    # modified or invalid" failure on the outer app signature. Signing
+    # `sherpa_onnx.framework` itself (not the loose `sherpa_onnx` binary
+    # inside it) is what actually seals the bundle structure (Info.plist,
+    # Versions symlinks) the outer --deep verification expects to find.
+    if [ -d "$APP/Contents/MacOS/sherpa_onnx.framework" ]; then
+        codesign --force --sign "WhisperFlow Dev" \
+            "$APP/Contents/MacOS/sherpa_onnx.framework/Versions/A/libonnxruntime.dylib"
+        codesign --force --sign "WhisperFlow Dev" \
+            "$APP/Contents/MacOS/sherpa_onnx.framework"
+    fi
     codesign --force --sign "WhisperFlow Dev" "$APP"
     echo "Signed with 'WhisperFlow Dev'."
 else

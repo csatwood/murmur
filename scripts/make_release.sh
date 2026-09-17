@@ -1,10 +1,16 @@
 #!/bin/bash
-# Wraps build/Murmur.app (built by make_app.sh) into a distributable .dmg.
+# Wraps build/Murmur.app (built by make_app.sh) into a distributable .dmg,
+# plus a .zip of the same build for the in-app updater (AppInstaller.swift)
+# to consume — attach BOTH to the GitHub release, or in-app auto-update
+# silently falls back to the manual .dmg link for that version.
 #
 # This is a self-signed build, not a notarized one — Gatekeeper will still
-# tell anyone who downloads it that it's from an unidentified developer.
-# That's expected for now: right-click the app -> Open (or System Settings
-# -> Privacy & Security -> Open Anyway) gets past it, once, per Mac.
+# tell anyone who downloads the .dmg by hand that it's from an unidentified
+# developer (System Settings -> Privacy & Security -> Open Anyway gets past
+# it, once, per Mac). The in-app updater sidesteps this entirely: a plain
+# URLSession download never sets the quarantine flag Gatekeeper checks, so
+# an update installed through the app never hits that prompt — only a
+# from-scratch manual download does.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -33,4 +39,12 @@ hdiutil create -volname Murmur -srcfolder "$STAGING" -ov -format UDZO "$DMG"
 UNVERSIONED="build/Murmur.dmg"
 cp -f "$DMG" "$UNVERSIONED"
 
-echo "Built $DMG and $UNVERSIONED"
+# `ditto -c -k` (not plain `zip`) preserves the code signature and
+# extended attributes correctly — required for AppInstaller's Bundle(url:)
+# bundle-identifier check to see a validly-signed app after unzipping.
+ZIP="build/Murmur-$VERSION.zip"
+rm -f "$ZIP"
+ditto -c -k --keepParent build/Murmur.app "$ZIP"
+
+echo "Built $DMG, $UNVERSIONED, and $ZIP"
+echo "Attach both $DMG and $ZIP to the GitHub release for this version."

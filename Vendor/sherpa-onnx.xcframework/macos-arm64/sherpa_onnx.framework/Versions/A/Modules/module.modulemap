@@ -1,0 +1,6 @@
+framework module sherpa_onnx {
+    umbrella header "c-api.h"
+    export *
+    module * { export * }
+    link "c++"
+}

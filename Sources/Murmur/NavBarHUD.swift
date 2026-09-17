@@ -387,6 +387,9 @@ private struct NavBarHUDView: View {
                     NavPopoverRow(title: "Parakeet", selected: app.engine == "parakeet") {
                         app.setEngine("parakeet")
                     }
+                    NavPopoverRow(title: "sherpa-onnx", selected: app.engine == "sherpa") {
+                        app.setEngine("sherpa")
+                    }
                 }
                 .offset(y: -44)
                 .onHover { inside in

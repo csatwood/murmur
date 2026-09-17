@@ -2,11 +2,10 @@ import Foundation
 
 /// A real, available release — never fabricated. Everything here comes
 /// from GitHub's own Releases API for this repo; there's no appcast, no
-/// Sparkle, no auto-installer. "Update Now" opens the release's page (or
-/// its asset) in the browser rather than downloading and replacing the
-/// running app bundle in place — that's a much bigger, riskier feature
-/// (unpacking an archive, verifying it, relaunching into it) than
-/// translating this page's design calls for.
+/// Sparkle. "Update Now" installs for real when the release publishes a
+/// `.zip` asset (see `AppInstaller`) — `installerZipURL` — and falls back
+/// to opening `downloadURL` (the `.dmg`, or the release page) in the
+/// browser if that asset is missing or the install fails partway.
 struct AppUpdate: Identifiable, Equatable {
     var version: String
     /// Raw bullet lines from the release body, marker stripped. Not
@@ -16,9 +15,15 @@ struct AppUpdate: Identifiable, Equatable {
     var notes: [String]
     var sizeBytes: Int64?
     var publishedAt: Date?
-    /// Where "Update Now" sends you: the matching downloadable asset if
-    /// the release has one, otherwise the release page itself.
+    /// Manual fallback: the release's `.dmg` if it has one, otherwise the
+    /// release page itself. Opened in the browser only when the real
+    /// in-place install (below) isn't possible or fails.
     var downloadURL: URL
+    /// The release's `.zip` asset, if it published one — `AppInstaller`
+    /// downloads and unpacks this to replace the running app bundle in
+    /// place. `nil` for a release built before this existed, or one
+    /// someone forgot to attach it to.
+    var installerZipURL: URL?
     var id: String { version }
 }
 
@@ -46,12 +51,16 @@ enum UpdateChecker {
         let runningVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         guard isNewer(latestVersion, than: runningVersion) else { return nil }
 
-        let asset = release.assets.first {
-            $0.name.hasSuffix(".dmg") || $0.name.hasSuffix(".zip")
-        }
-        guard let downloadURL = asset.flatMap({ URL(string: $0.browserDownloadURL) })
+        // Prefer the .dmg for the manual/fallback link — that's the
+        // friendlier drag-to-Applications experience for anyone who ends
+        // up downloading it by hand. The .zip is a separate asset, picked
+        // out below, purely for the in-place installer to consume.
+        let dmgAsset = release.assets.first { $0.name.hasSuffix(".dmg") }
+        let zipAsset = release.assets.first { $0.name.hasSuffix(".zip") }
+        guard let downloadURL = (dmgAsset ?? zipAsset).flatMap({ URL(string: $0.browserDownloadURL) })
             ?? URL(string: release.htmlURL)
         else { return nil }
+        let installerZipURL = zipAsset.flatMap { URL(string: $0.browserDownloadURL) }
 
         let notes = (release.body ?? "")
             .split(separator: "\n", omittingEmptySubsequences: true)
@@ -64,9 +73,10 @@ enum UpdateChecker {
         return AppUpdate(
             version: latestVersion,
             notes: notes,
-            sizeBytes: asset?.size,
+            sizeBytes: (dmgAsset ?? zipAsset)?.size,
             publishedAt: release.publishedAt.flatMap(formatter.date(from:)),
-            downloadURL: downloadURL)
+            downloadURL: downloadURL,
+            installerZipURL: installerZipURL)
     }
 
     /// Dotted-numeric comparison ("1.10.0" > "1.9.0"), padding whichever

@@ -32,6 +32,7 @@ struct SettingsPage: View {
 
     @State private var supportedLocaleIDs: [String] = []
     @State private var handsFreeAutoStop = Settings.handsFreeAutoStop
+    @State private var autoPasteEnabled = Settings.autoPasteEnabled
     /// Which `AccentFieldSelect` (by its `id`) has its panel open, if any.
     /// Lifted up to the whole page rather than owned by each dropdown —
     /// see the panel-rendering `.overlayPreferenceValue` below for why.
@@ -393,6 +394,18 @@ struct SettingsPage: View {
                         Settings.handsFreeAutoStop = newValue
                     }
             }
+            fieldRow(
+                label: "Auto-paste",
+                detail: "Paste a finished dictation at your cursor automatically. Off "
+                    + "leaves it on the clipboard to paste yourself — useful for a field "
+                    + "you'd rather review first. Overridable per app in App Profiles.",
+                isLast: false
+            ) {
+                WarmToggle(isOn: $autoPasteEnabled)
+                    .onChange(of: autoPasteEnabled) { _, newValue in
+                        Settings.autoPasteEnabled = newValue
+                    }
+            }
             fieldRow(label: "Language") {
                 AccentFieldSelect(
                     id: "language",
@@ -403,7 +416,7 @@ struct SettingsPage: View {
                 label: "Recognition engine",
                 detail: engineDetail,
                 isLast: app.engine != "whisper" && app.engine != "whispercpp"
-                    && app.engine != "parakeet"
+                    && app.engine != "parakeet" && app.engine != "sherpa"
             ) {
                 AccentFieldSelect(id: "engine", label: engineLabel(app.engine), openID: $openDropdown)
             }
@@ -446,6 +459,19 @@ struct SettingsPage: View {
                         openID: $openDropdown)
                 }
             }
+            if app.engine == "sherpa" {
+                fieldRow(
+                    label: "sherpa-onnx model",
+                    detail: sherpaModelDetail,
+                    isLast: true
+                ) {
+                    AccentFieldSelect(
+                        id: "sherpaModel",
+                        label: SherpaOnnxEngine.availableModels.first { $0.id == app.sherpaModel }?.label
+                            ?? app.sherpaModel,
+                        openID: $openDropdown)
+                }
+            }
         }
     }
 
@@ -458,10 +484,11 @@ struct SettingsPage: View {
     private func dropdownOptions(for id: String) -> [String] {
         switch id {
         case "hotkey": return HotkeyMonitor.Hotkey.allCases.map(\.rawValue)
-        case "engine": return ["apple", "whisper", "whispercpp", "parakeet"]
+        case "engine": return ["apple", "whisper", "whispercpp", "parakeet", "sherpa"]
         case "whisperModel": return WhisperEngine.availableModels.map(\.id)
         case "whisperCppModel": return WhisperCppEngine.availableModels.map(\.id)
         case "parakeetModel": return ParakeetEngine.availableModels.map(\.id)
+        case "sherpaModel": return SherpaOnnxEngine.availableModels.map(\.id)
         case "language": return pickerLocaleIDs
         case "notetakerMaxLength": return ["30", "60", "120", "240", "0"]
         default: return []
@@ -479,6 +506,8 @@ struct SettingsPage: View {
             return { m in WhisperCppEngine.availableModels.first { $0.id == m }?.label ?? m }
         case "parakeetModel":
             return { m in ParakeetEngine.availableModels.first { $0.id == m }?.label ?? m }
+        case "sherpaModel":
+            return { m in SherpaOnnxEngine.availableModels.first { $0.id == m }?.label ?? m }
         case "language":
             return { id in Locale.current.localizedString(forIdentifier: id) ?? id }
         case "notetakerMaxLength":
@@ -506,6 +535,7 @@ struct SettingsPage: View {
         case "whisperCppModel":
             return Binding(get: { app.whisperCppModel }, set: { app.setWhisperCppModel($0) })
         case "parakeetModel": return Binding(get: { app.parakeetModel }, set: { app.setParakeetModel($0) })
+        case "sherpaModel": return Binding(get: { app.sherpaModel }, set: { app.setSherpaModel($0) })
         case "language": return Binding(get: { app.localeID }, set: { app.setLocale($0) })
         case "notetakerMaxLength":
             return Binding(
@@ -530,6 +560,7 @@ struct SettingsPage: View {
         // engine replacing the other.
         case "whispercpp": return "whisper.cpp — precise, Metal"
         case "parakeet": return "Parakeet — precise, fast"
+        case "sherpa": return "sherpa-onnx — experimental, CPU"
         default: return "Apple — instant"
         }
     }
@@ -546,6 +577,11 @@ struct SettingsPage: View {
             return "Parakeet: NVIDIA's model, run on the Neural Engine — notably fast, "
                 + "strong accuracy. Your dictionary isn't fed to it yet, unlike the "
                 + "Whisper engines above. Runs locally."
+        case "sherpa":
+            return "sherpa-onnx: a newer, CPU-only engine (SenseVoice) — no Neural Engine "
+                + "acceleration, but very fast even so. English only for now, and less "
+                + "tested here than the engines above. Your dictionary isn't fed to it "
+                + "yet either. Runs locally."
         default:
             return "Apple: instant, built into macOS. Runs locally."
         }
@@ -576,6 +612,16 @@ struct SettingsPage: View {
             return "Model loaded — Parakeet is transcribing your dictations."
         }
         if app.parakeetEngine.isModelDownloaded(app.parakeetModel) {
+            return "Model downloaded — loading. Apple engine covers dictations until it's ready."
+        }
+        return "Downloading in the background. Apple engine covers dictations until it's ready."
+    }
+
+    private var sherpaModelDetail: String {
+        if app.sherpaReady {
+            return "Model loaded — sherpa-onnx is transcribing your dictations."
+        }
+        if app.sherpaEngine.isModelDownloaded(app.sherpaModel) {
             return "Model downloaded — loading. Apple engine covers dictations until it's ready."
         }
         return "Downloading in the background. Apple engine covers dictations until it's ready."

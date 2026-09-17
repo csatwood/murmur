@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     let whisperEngine = WhisperEngine()
     let whisperCppEngine = WhisperCppEngine()
     let parakeetEngine = ParakeetEngine()
+    let sherpaEngine = SherpaOnnxEngine()
     let vadEngine = VadEngine()
     private lazy var turnDetector = TurnDetector(vadEngine: vadEngine)
     @Published var engine: String = Settings.engine
@@ -63,6 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     @Published var whisperCppReady = false
     @Published var parakeetModel: String = Settings.parakeetModel
     @Published var parakeetReady = false
+    @Published var sherpaModel: String = Settings.sherpaModel
+    @Published var sherpaReady = false
     @Published var voiceProfile: VoiceProfile? = VoiceProfileStore.load()
     @Published var appearance: AppearanceSetting = Settings.appearance
     private(set) lazy var transformManager = TransformManager(engine: rewriteEngine)
@@ -84,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// launch, `nil` otherwise. `AppShellRoot` presents the update sheet
     /// via `.sheet(item:)` off this.
     @Published var availableUpdate: AppUpdate?
+    /// Non-nil while `installUpdate(_:)` is downloading/unpacking/
+    /// installing — `SoftwareUpdateSheet` shows it as the "Update Now"
+    /// button's label so the user isn't left staring at a button that
+    /// looks unresponsive during the download.
+    @Published var updateInstallProgress: String?
     /// Ask Murmur's whole conversation, kept here rather than as `@State`
     /// on `AskPage` — that page is a fresh `View` struct every time the
     /// rail navigates to it, so `@State` reset the thread to empty on every
@@ -191,12 +199,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     model: Settings.parakeetModel)
             }
         }
+        sherpaEngine.onStatus = { [weak self] status in
+            Task { @MainActor in
+                guard let self else { return }
+                self.transformStatus = status
+                self.sherpaReady = self.sherpaEngine.isReady(
+                    model: Settings.sherpaModel)
+            }
+        }
         if Settings.engine == "whisper" {
             whisperEngine.preload(model: Settings.whisperModel)
         } else if Settings.engine == "whispercpp" {
             whisperCppEngine.preload(model: Settings.whisperCppModel)
         } else if Settings.engine == "parakeet" {
             parakeetEngine.preload(model: Settings.parakeetModel)
+        } else if Settings.engine == "sherpa" {
+            sherpaEngine.preload(model: Settings.sherpaModel)
         }
         // Unconditional, unlike the engine preloads above — VAD refines the
         // silence gate for every recognition engine, not just one choice.
@@ -272,6 +290,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 title: title,
                 message: update.notes.first ?? "A new version is ready to download.",
                 kind: .updateAvailable)
+        }
+    }
+
+    /// Tries a real in-place install via `AppInstaller`, then relaunches
+    /// into it. Falls back to opening `update.downloadURL` in the browser
+    /// — today's behavior — if the release has no `.zip` asset or the
+    /// download/unpack/replace fails at any step; the user is never left
+    /// with a half-updated app or a dead-end button.
+    func installUpdate(_ update: AppUpdate) async {
+        do {
+            try await AppInstaller.install(update) { [weak self] message in
+                Task { @MainActor in self?.updateInstallProgress = message }
+            }
+            relaunch()
+        } catch {
+            updateInstallProgress = nil
+            NSWorkspace.shared.open(update.downloadURL)
         }
     }
 
@@ -444,6 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         whisperReady = whisperEngine.isReady(model: Settings.whisperModel)
         whisperCppReady = whisperCppEngine.isReady(model: Settings.whisperCppModel)
         parakeetReady = parakeetEngine.isReady(model: Settings.parakeetModel)
+        sherpaReady = sherpaEngine.isReady(model: Settings.sherpaModel)
     }
 
     // MARK: - Settings changes (from window or menu)
@@ -473,6 +509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             whisperCppEngine.preload(model: Settings.whisperCppModel)
         } else if newEngine == "parakeet" {
             parakeetEngine.preload(model: Settings.parakeetModel)
+        } else if newEngine == "sherpa" {
+            sherpaEngine.preload(model: Settings.sherpaModel)
         }
         reconcileLocaleWithEngine()
     }
@@ -504,12 +542,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         reconcileLocaleWithEngine()
     }
 
+    func setSherpaModel(_ model: String) {
+        Settings.sherpaModel = model
+        sherpaModel = model
+        if Settings.engine == "sherpa" {
+            sherpaEngine.preload(model: model)
+        }
+        reconcileLocaleWithEngine()
+    }
+
     /// Language codes the active recognition engine (and, for Whisper/
     /// Parakeet, its selected model) can actually transcribe. `nil` for
     /// Apple's on-device engine: its supported set is a fixed, per-locale
     /// asset list that only `SpeechTranscriber` knows, which the Settings
     /// and HUD language pickers already load and cache themselves.
     func supportedLanguageIDs() -> [String]? {
+        Self.supportedLanguageIDs(
+            engine: engine, whisperModel: whisperModel, whisperCppModel: whisperCppModel,
+            parakeetModel: parakeetModel, sherpaModel: sherpaModel)
+    }
+
+    /// Same logic as the instance method above, generalized to take
+    /// explicit engine/model values instead of reading this instance's own
+    /// published state — so `AppProfilesPage`'s per-profile language
+    /// picker can compute "what's supported by the engine *this profile*
+    /// would use" (its own override, or else the global default) without
+    /// duplicating the per-engine switch.
+    static func supportedLanguageIDs(
+        engine: String, whisperModel: String, whisperCppModel: String,
+        parakeetModel: String, sherpaModel: String
+    ) -> [String]? {
         switch engine {
         case "whisper":
             return WhisperEngine.isEnglishOnly(whisperModel)
@@ -521,6 +583,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             return WhisperEngine.supportedLanguageCodes
         case "parakeet":
             return ParakeetEngine.supportedLanguageCodes(for: parakeetModel)
+        case "sherpa":
+            return SherpaOnnxEngine.supportedLanguageCodes(for: sherpaModel)
         default:
             return nil
         }
@@ -632,51 +696,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     /// engine handles the dictation, and Whisper takes over once ready.
     /// Whisper failures also fall back to Apple so a keypress always
     /// produces text.
+    /// `bundleID` also resolves a per-app engine/language override
+    /// (`AppProfile.engine`/`.localeIdentifier`) — most dictations have
+    /// neither set, so `effectiveEngine`/`effectiveLocale` are just
+    /// `Settings.engine`/`.localeIdentifier` read through one extra
+    /// indirection, not a behavior change for anyone who hasn't set one.
     private func recognize(fileAt url: URL, bundleID: String?) async throws -> String {
         let developerVocabulary = AppProfileStore.developerVocabularyEnabled(forBundleID: bundleID)
         let biasTerms = LearnedStore.biasTerms(includeDeveloperVocabulary: developerVocabulary)
+        let effectiveEngine = AppProfileStore.engine(forBundleID: bundleID)
+        let effectiveModel = AppProfileStore.model(forBundleID: bundleID)
+        let effectiveLocale = AppProfileStore.localeIdentifier(forBundleID: bundleID)
         dictationLog.info(
-            "recognize: engine=\(Settings.engine, privacy: .public) locale=\(Settings.localeIdentifier, privacy: .public) developerVocabulary=\(developerVocabulary) parakeetReady=\(self.parakeetEngine.isReady(model: Settings.parakeetModel)) whisperReady=\(self.whisperEngine.isReady(model: Settings.whisperModel)) whisperCppReady=\(self.whisperCppEngine.isReady(model: Settings.whisperCppModel))")
-        if Settings.engine == "whisper" {
-            if whisperEngine.isReady(model: Settings.whisperModel) {
+            "recognize: engine=\(effectiveEngine, privacy: .public) model=\(effectiveModel, privacy: .public) locale=\(effectiveLocale, privacy: .public) developerVocabulary=\(developerVocabulary) parakeetReady=\(self.parakeetEngine.isReady(model: Settings.parakeetModel)) whisperReady=\(self.whisperEngine.isReady(model: Settings.whisperModel)) whisperCppReady=\(self.whisperCppEngine.isReady(model: Settings.whisperCppModel)) sherpaReady=\(self.sherpaEngine.isReady(model: Settings.sherpaModel))")
+        if effectiveEngine == "whisper" {
+            if whisperEngine.isReady(model: effectiveModel) {
                 do {
                     return try await whisperEngine.transcribe(
-                        fileAt: url, model: Settings.whisperModel,
-                        localeID: Settings.localeIdentifier, biasTerms: biasTerms)
+                        fileAt: url, model: effectiveModel,
+                        localeID: effectiveLocale, biasTerms: biasTerms)
                 } catch {
                     lastError = "Whisper engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."
                     dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
-                whisperEngine.preload(model: Settings.whisperModel)
+                whisperEngine.preload(model: effectiveModel)
                 lastError = "Whisper model is still preparing — used Apple " +
                     "engine for this dictation. Whisper takes over when ready."
                 dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
-        } else if Settings.engine == "whispercpp" {
-            if whisperCppEngine.isReady(model: Settings.whisperCppModel) {
+        } else if effectiveEngine == "whispercpp" {
+            if whisperCppEngine.isReady(model: effectiveModel) {
                 do {
                     return try await whisperCppEngine.transcribe(
-                        fileAt: url, model: Settings.whisperCppModel,
-                        localeID: Settings.localeIdentifier, biasTerms: biasTerms)
+                        fileAt: url, model: effectiveModel,
+                        localeID: effectiveLocale, biasTerms: biasTerms)
                 } catch {
                     lastError = "whisper.cpp engine failed " +
                         "(\(error.localizedDescription)) — used Apple engine instead."
                     dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
-                whisperCppEngine.preload(model: Settings.whisperCppModel)
+                whisperCppEngine.preload(model: effectiveModel)
                 lastError = "whisper.cpp model is still preparing — used Apple " +
                     "engine for this dictation. whisper.cpp takes over when ready."
                 dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
-        } else if Settings.engine == "parakeet" {
-            if parakeetEngine.isReady(model: Settings.parakeetModel) {
+        } else if effectiveEngine == "parakeet" {
+            if parakeetEngine.isReady(model: effectiveModel) {
                 do {
                     return try await parakeetEngine.transcribe(
-                        fileAt: url, model: Settings.parakeetModel,
-                        localeID: Settings.localeIdentifier, biasTerms: biasTerms,
+                        fileAt: url, model: effectiveModel,
+                        localeID: effectiveLocale, biasTerms: biasTerms,
                         boostVocabulary: developerVocabulary)
                 } catch {
                     lastError = "Parakeet engine failed " +
@@ -684,15 +756,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
                 }
             } else {
-                parakeetEngine.preload(model: Settings.parakeetModel)
+                parakeetEngine.preload(model: effectiveModel)
                 lastError = "Parakeet model is still preparing — used Apple " +
                     "engine for this dictation. Parakeet takes over when ready."
                 dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
             }
+        } else if effectiveEngine == "sherpa" {
+            if sherpaEngine.isReady(model: effectiveModel) {
+                do {
+                    return try await sherpaEngine.transcribe(
+                        fileAt: url, model: effectiveModel,
+                        localeID: effectiveLocale, biasTerms: biasTerms)
+                } catch {
+                    lastError = "sherpa-onnx engine failed " +
+                        "(\(error.localizedDescription)) — used Apple engine instead."
+                    dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
+                }
+            } else {
+                sherpaEngine.preload(model: effectiveModel)
+                lastError = "sherpa-onnx model is still preparing — used Apple " +
+                    "engine for this dictation. sherpa-onnx takes over when ready."
+                dictationLog.error("recognize: \(self.lastError ?? "", privacy: .public)")
+            }
         }
         dictationLog.info(
-            "recognize: falling back to Apple engine, transcriber.locale=\(self.transcriber.locale.identifier, privacy: .public)")
-        return try await transcriber.transcribe(fileAt: url, biasTerms: biasTerms)
+            "recognize: falling back to Apple engine, locale=\(effectiveLocale, privacy: .public)")
+        // The shared `transcriber` stays pinned to the global locale (it's
+        // kept warm there), so a per-profile locale override that differs
+        // from it needs its own instance — the common case (no override)
+        // skips this and reuses the already-warm one.
+        if effectiveLocale == Settings.localeIdentifier {
+            return try await transcriber.transcribe(fileAt: url, biasTerms: biasTerms)
+        }
+        let overrideTranscriber = Transcriber(locale: Locale(identifier: effectiveLocale))
+        return try await overrideTranscriber.transcribe(fileAt: url, biasTerms: biasTerms)
     }
 
     // MARK: - Hotkey wiring
@@ -860,6 +957,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 dictationLog.info("recognize: VAD found no speech, skipping recognition")
                 uiState = .idle
                 return
+            }
+            // A site rule takes over from the browser's own generic
+            // profile when the active tab matches — shadowing rather than
+            // a fresh `let` so every resolver below (`recognize`,
+            // `style(forBundleID:)`, `history.add`, …) picks the
+            // substitution up automatically, same as if it were the real
+            // frontmost bundle ID. Skips the AppleScript round-trip
+            // entirely unless both a supported browser is actually
+            // frontmost and at least one site rule exists — the common
+            // case for most users, who have neither.
+            var resolvedBundleID = resolvedBundleID
+            if AppProfileStore.hasSiteProfiles,
+               let browser = MeetingApp.allCases.first(
+                where: { $0.rawValue == resolvedBundleID && $0.isBrowser }) {
+                let activeURL = await Task.detached(priority: .utility) {
+                    BrowserTabReader.activeTabURL(for: browser)
+                }.value
+                if let activeURL, let siteKey = AppProfileStore.siteProfileKey(forURL: activeURL) {
+                    dictationLog.info("recognize: site rule matched, using \(siteKey, privacy: .public)")
+                    resolvedBundleID = siteKey
+                }
             }
             do {
                 dictationLog.info("recognize: start")
@@ -1043,7 +1161,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     entries = history.entries
                     dictationLog.info("history: added, inserting text")
                     refreshVoiceProfileIfDue()
-                    if AXIsProcessTrusted() {
+                    if !AppProfileStore.autoPasteEnabled(forBundleID: resolvedBundleID) {
+                        // A deliberate choice, not a failure — no error, no
+                        // sound, just leave it where the user asked for it.
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(formatted, forType: .string)
+                        dictationLog.info("auto-paste disabled for this app — left on clipboard")
+                    } else if AXIsProcessTrusted() {
                         // Dictating into Murmur's own window (Scratchpad,
                         // Ask, Transforms' try-it box, …) is the one case
                         // where the paste target and the app posting the
@@ -1316,7 +1441,8 @@ enum Settings {
     }
 
     /// Recognition engine: "apple" (instant), "whisper" or "whispercpp"
-    /// (precise, Whisper-family), or "parakeet" (precise, fast).
+    /// (precise, Whisper-family), "parakeet" (precise, fast), or "sherpa"
+    /// (sherpa-onnx/SenseVoice, CPU-only, no Neural Engine acceleration).
     static var engine: String {
         get { defaults.string(forKey: "engine") ?? "apple" }
         set { defaults.set(newValue, forKey: "engine") }
@@ -1342,6 +1468,15 @@ enum Settings {
         set { defaults.set(newValue, forKey: "parakeetModel") }
     }
 
+    /// Only one sherpa-onnx model is offered today (`SherpaOnnxEngine
+    /// .availableModels`) — stored the same way as the other three engines'
+    /// model settings anyway, so a second option can be added later without
+    /// a migration.
+    static var sherpaModel: String {
+        get { defaults.string(forKey: "sherpaModel") ?? "sense-voice-small" }
+        set { defaults.set(newValue, forKey: "sherpaModel") }
+    }
+
     /// Which CTC model `ParakeetEngine` loads for vocabulary-boosting
     /// rescoring — independent of `parakeetModel` (v2/v3), which is the
     /// main transcription model. Defaults to `"ctc06b"`, the larger/more
@@ -1365,6 +1500,15 @@ enum Settings {
     static var handsFreeAutoStop: Bool {
         get { defaults.object(forKey: "handsFreeAutoStop") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "handsFreeAutoStop") }
+    }
+
+    /// Whether a finished dictation is auto-pasted at the cursor (the
+    /// existing, only behavior until now) or just left on the clipboard for
+    /// the user to paste themselves. A per-app `AppProfile.autoPaste`
+    /// overrides this for one app; this is the fallback for everywhere else.
+    static var autoPasteEnabled: Bool {
+        get { defaults.object(forKey: "autoPasteEnabled") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "autoPasteEnabled") }
     }
 
     /// The version the user chose "Skip This Version" for, if any — that

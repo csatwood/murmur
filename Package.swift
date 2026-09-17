@@ -17,6 +17,15 @@ let package = Package(
             name: "HarperFramework",
             path: "Vendor/harper.xcframework"
         ),
+        .binaryTarget(
+            name: "SherpaOnnxFramework",
+            path: "Vendor/sherpa-onnx.xcframework"
+        ),
+        .target(
+            name: "CMurmurSherpa",
+            dependencies: ["SherpaOnnxFramework"],
+            path: "Sources/CMurmurSherpa"
+        ),
         .executableTarget(
             name: "Murmur",
             dependencies: [
@@ -24,6 +33,8 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 "WhisperCppFramework",
                 "HarperFramework",
+                "SherpaOnnxFramework",
+                "CMurmurSherpa",
             ],
             path: "Sources/Murmur",
             resources: [

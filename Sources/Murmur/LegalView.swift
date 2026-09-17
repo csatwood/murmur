@@ -206,6 +206,22 @@ private struct OpenSourceComponent {
             copyright: "Copyright 2025 FluidInference",
             fullText: apacheLicense),
         OpenSourceComponent(
+            name: "sherpa-onnx",
+            purpose: "Murmur's newest recognition engine — runs SenseVoice (a "
+                + "multilingual speech model) via ONNX Runtime on the CPU, no Neural "
+                + "Engine involved. Vendored as a prebuilt binary framework at "
+                + "Vendor/sherpa-onnx.xcframework.",
+            license: "Apache-2.0",
+            copyright: "Copyright (c) 2023 Xiaomi Corporation",
+            fullText: apacheLicense),
+        OpenSourceComponent(
+            name: "ONNX Runtime",
+            purpose: "The inference engine sherpa-onnx above runs on. Vendored "
+                + "alongside it inside Vendor/sherpa-onnx.xcframework.",
+            license: "MIT",
+            copyright: "Copyright (c) Microsoft Corporation",
+            fullText: mitLicense(copyright: "Copyright (c) Microsoft Corporation")),
+        OpenSourceComponent(
             name: "Harper",
             purpose: "The fast, deterministic grammar and style checker that runs "
                 + "alongside Apple Intelligence on every dictation.",

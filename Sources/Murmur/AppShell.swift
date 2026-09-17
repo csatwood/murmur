@@ -319,7 +319,7 @@ struct AppShellRoot: View {
         // Escape, clicking outside) — none of the three actions need to
         // touch it themselves.
         .sheet(item: $app.availableUpdate) { update in
-            SoftwareUpdateSheet(update: update)
+            SoftwareUpdateSheet(update: update, app: app)
         }
     }
 
