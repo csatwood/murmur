@@ -20,6 +20,35 @@ Murmur is an open-source, fully local take on the modern AI dictation app
 (in the spirit of Wispr Flow), built natively in Swift on Apple's on-device
 speech and language models, with an optional local Whisper engine.
 
+## About this fork
+
+This is a personal fork of [Murmur by janisbelozerovs-dev](https://github.com/janisbelozerovs-dev/murmur), maintained by [csatwood](https://github.com/csatwood). It is not an official upstream release. The original copyright and [MIT license](LICENSE) are retained, along with upstream history and contributor credit.
+
+The default `personal` branch is based on upstream commit [`0627909`](https://github.com/janisbelozerovs-dev/murmur/commit/0627909) (Murmur 2.1.0). It does not automatically include later upstream changes. The `main` branch retains the upstream snapshot taken when this fork was created.
+
+The [upstream review](docs/upstream-review.md) records the nine later upstream commits, useful fixes, merge conflicts, and the upstream updater risk. Those commits have not been merged into `personal`.
+
+## Changes in this fork
+
+- **Microphone selection:** Settings → Dictation → Microphone offers System default and connected inputs. Upstream pinned recording to the built-in microphone. System default now follows macOS input settings, allowing an external microphone to work with a laptop lid closed. Explicit selections use persistent device IDs; a disconnected selection produces an error instead of silently recording another input.
+- **Fast dictation by default:** “As spoken” skips the automatic AI rewrite while retaining punctuation, basic filler removal, spoken layout commands, learned corrections, snippets, and English grammar checks. Explicit styles and templates still use AI. Enable **Settings → Dictation → Automatic AI cleanup** to restore the upstream cleanup pass. Fast mode does not perform the AI pass's false-start removal or restructuring of rambling speech. Raw mode keeps its existing behavior.
+- **Build compatibility:** structured Apple Intelligence output uses explicit `Generable` conformance instead of requiring the Foundation Models macro plugin. The app build script accepts Swift build arguments and packages fonts from their source directory.
+
+### Performance checks
+
+The first optimization removes an automatic AI rewrite from ordinary dictation; it does not replace the recognition engine. In two live baseline recordings, recognition took 0.24–0.36 seconds while subsequent processing added 2.87–3.93 seconds. Those observations identified the delay rather than establishing a general speed guarantee.
+
+A local comparison with Hex 2.1.18 used the same two synthetic WAV files, one warmup pass, and three measured passes. Median warm recognition times were:
+
+| Clip | This fork: Parakeet v2 / FluidAudio | Hex: Parakeet Unified English / transcribe.cpp |
+| --- | ---: | ---: |
+| 2.5-second sentence | 158 ms | 252 ms |
+| 10.3-second paragraph | 203 ms | 596 ms |
+
+These are different model variants and runtimes. Murmur's timing includes its file conversion; Hex's benchmark times prepared audio. Results exclude recording, insertion, and cold model loading. Two synthetic clips do not establish an accuracy ranking or performance on other machines.
+
+The sections below describe Murmur's inherited features and build process.
+
 ## Features
 
 - **Push-to-talk dictation** — hold `fn` (or right ⌥) anywhere; release to
@@ -37,7 +66,7 @@ speech and language models, with an optional local Whisper engine.
     [FluidAudio](https://github.com/FluidInference/FluidAudio) (CoreML on
     the Neural Engine). Murmur's fastest engine; no vocabulary biasing yet.
 - **Harper grammar pass** — [Harper](https://github.com/Automattic/harper)
-  runs alongside the Apple Intelligence edit pass below: deterministic,
+  runs after basic cleanup and any requested Apple Intelligence edit: deterministic,
   millisecond-speed local linting (agreement, punctuation, repeated words)
   that catches what an LLM edit occasionally misses. No model, no warm-up,
   no network.
@@ -83,10 +112,15 @@ cd murmur
 open build/Murmur.app
 ```
 
-Optional: run `./scripts/make_signing_cert.sh` once to create a local
-self-signed signing certificate — this keeps macOS permission grants valid
-across rebuilds. Without it the app is ad-hoc signed and you'll need to
-re-grant Accessibility after each rebuild.
+Run `./scripts/make_signing_cert.sh` once to create the local signing certificate
+required by the build script. Reusing this certificate preserves permission
+grants across rebuilds. The build stops if the certificate is missing.
+
+To select an installed SDK, pass Swift build arguments through the script:
+
+```bash
+./scripts/make_app.sh --disable-automatic-resolution --sdk /path/to/MacOSX.sdk
+```
 
 ### One-time permissions
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Personal fork: fast dictation (build 4.2)
+
+- Skip automatic AI rewriting for As spoken dictation by default.
+- Retain punctuation, basic cleanup, learned corrections, snippets, and Harper grammar checks.
+- Keep AI for explicit styles and templates, with an Automatic AI cleanup setting to restore the previous default.
+- Preserve explicit CLI editing and Raw mode; add routing regression checks.
+- Document upstream attribution and fork differences in the README.
+
 ## Local microphone selection patch
 
 - Add Settings → Dictation → Microphone with System default and connected inputs.
