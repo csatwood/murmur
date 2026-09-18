@@ -230,8 +230,9 @@ enum LearnedStore {
     /// than pronunciation fixes. Be conservative when learning them
     /// automatically; explicit Voice Training and saved mappings stay intact.
     private static func isOrdinaryWord(_ phrase: String) -> Bool {
-        phrase.split(whereSeparator: { $0.isWhitespace }).count == 1
-            && HarperChecker.isKnownEnglishWord(phrase)
+        let word = phrase.trimmingCharacters(in: .punctuationCharacters)
+        return word.split(whereSeparator: { $0.isWhitespace }).count == 1
+            && HarperChecker.isKnownEnglishWord(word)
     }
 
     private static func isUsefulMapping(heard: String, intended: String) -> Bool {
@@ -252,6 +253,8 @@ enum LearnedStore {
              [("base ten", "Baseten")]),
             ("Hello world.", "Hello world.", []),
             ("I need a new team today.", "I need a new theme today.", []),
+            ("He said \"team\" today.", "He said \"theme\" today.", []),
+            ("He said (team) today.", "He said (theme) today.", []),
             ("Put it there today.", "Put it here today.", []),
             ("I met so ren and Anna.", "I met Søren and Anna.",
              [("so ren", "Søren")]),
