@@ -938,7 +938,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // "corrects" other languages' real words into the
                     // nearest English one instead of leaving them alone.
                     if !formatted.isEmpty, isEnglishDictation {
-                        formatted = HarperChecker.fix(formatted)
+                        formatted = HarperChecker.fix(
+                            formatted, vocabulary: LearnedStore.protectedVocabulary())
                     }
                 }
                 dictationLog.info("pipeline done: \(formatted.count) chars")

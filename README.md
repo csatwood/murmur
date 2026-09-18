@@ -26,12 +26,13 @@ This is a personal fork of [Murmur by janisbelozerovs-dev](https://github.com/ja
 
 The default `personal` branch is based on upstream commit [`0627909`](https://github.com/janisbelozerovs-dev/murmur/commit/0627909) (Murmur 2.1.0). It does not automatically include later upstream changes. The `main` branch retains the upstream snapshot taken when this fork was created.
 
-The [upstream review](docs/upstream-review.md) records the nine later upstream commits, useful fixes, merge conflicts, and the upstream updater risk. Those commits have not been merged into `personal`.
+The [upstream review](docs/upstream-review.md) records the nine later upstream commits, useful fixes, merge conflicts, and the upstream updater risk. This fork selectively ports fixes from those commits; it does not merge the complete upstream history. GitHub may therefore still report it as behind even when a specific fix is included.
 
 ## Changes in this fork
 
 - **Microphone selection:** Settings → Dictation → Microphone offers System default and connected inputs. Upstream pinned recording to the built-in microphone. System default now follows macOS input settings, allowing an external microphone to work with a laptop lid closed. Explicit selections use persistent device IDs; a disconnected selection produces an error instead of silently recording another input.
 - **Fast dictation by default:** “As spoken” skips the automatic AI rewrite while retaining punctuation, basic filler removal, spoken layout commands, learned corrections, snippets, and English grammar checks. Explicit styles and templates still use AI. Enable **Settings → Dictation → Automatic AI cleanup** to restore the upstream cleanup pass. Fast mode does not perform the AI pass's false-start removal or restructuring of rambling speech. Raw mode keeps its existing behavior.
+- **Selected upstream correctness fixes:** known user vocabulary is protected during English grammar checking. Automatic learning no longer stores single ordinary-word substitutions from transcript edits; deliberate Voice Training and saved corrections remain intact. Abbreviation commas such as `p.m.,` survive formatting, and periods inside abbreviations no longer capitalize the next letter. These selectively adapt upstream `dd05b3b` and `f319a8a`; they do not enable developer-vocabulary guessing or change Parakeet.
 - **Build compatibility:** structured Apple Intelligence output uses explicit `Generable` conformance instead of requiring the Foundation Models macro plugin. The app build script accepts Swift build arguments and packages fonts from their source directory.
 
 ### Performance checks
@@ -170,3 +171,9 @@ See [PLAN.md](PLAN.md) for the original design document and
 ## License
 
 [MIT](LICENSE). Not affiliated with Wispr Flow, OpenAI, NVIDIA, or Apple.
+
+## Testing the selected upstream fixes
+
+Run `./scripts/test_corrections.sh` for isolated formatter, learning-store and Harper integration checks. It uses temporary storage and links the same vendored Harper archive as the app. An optional first argument selects an installed SDK.
+
+The Harper source, C headers and vendored archive are imported together from upstream commit `dd05b3b`. Normal app builds use that archive and do not require Rust. To rebuild Harper itself, install Rust and LLVM, then run `./scripts/build_harper.sh`; optional Swift build arguments are forwarded to its final link check. The Rust dependency lockfile is enforced. Rust tests were not run during this port because the local Rust toolchain was unavailable; the Swift integration checks exercise the actual shipped archive.

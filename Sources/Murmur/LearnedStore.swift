@@ -117,6 +117,16 @@ enum LearnedStore {
     /// Vocabulary handed to the speech model before recognition:
     /// taught terms, learned spellings, dictionary spellings, snippet triggers.
     static func biasTerms() -> [String] {
+        Array(vocabulary(includeSnippetExpansions: false).prefix(300))
+    }
+
+    /// Grammar protection includes saved expansion text, and is not constrained
+    /// by the speech model's contextual vocabulary limit.
+    static func protectedVocabulary() -> [String] {
+        vocabulary(includeSnippetExpansions: true)
+    }
+
+    private static func vocabulary(includeSnippetExpansions: Bool) -> [String] {
         var terms: [String] = []
         var seen = Set<String>()
         func insert(_ term: String) {
@@ -131,8 +141,12 @@ enum LearnedStore {
         learned.terms.forEach(insert)
         learned.corrections.map(\.intended).forEach(insert)
         TextFormatter.loadDictionary().values.forEach(insert)
-        SnippetStore.load().map(\.trigger).forEach(insert)
-        return Array(terms.prefix(300))
+        let snippets = SnippetStore.load()
+        snippets.map(\.trigger).forEach(insert)
+        if includeSnippetExpansions {
+            snippets.map(\.expansion).forEach(insert)
+        }
+        return terms
     }
 
     // MARK: - Diff extraction
@@ -188,7 +202,8 @@ enum LearnedStore {
                 let heard = normalizePhrase(removed.joined(separator: " "))
                 let intended = added.joined(separator: " ")
                     .trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-                if isUsefulMapping(heard: heard, intended: intended) {
+                if isUsefulMapping(heard: heard, intended: intended),
+                   !isOrdinaryWord(heard) {
                     pairs.append((heard, intended))
                 }
             }
@@ -211,6 +226,15 @@ enum LearnedStore {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:"))
     }
 
+    /// Diff-derived single-word replacements can be ordinary edits rather
+    /// than pronunciation fixes. Be conservative when learning them
+    /// automatically; explicit Voice Training and saved mappings stay intact.
+    private static func isOrdinaryWord(_ phrase: String) -> Bool {
+        let word = phrase.trimmingCharacters(in: .punctuationCharacters)
+        return word.split(whereSeparator: { $0.isWhitespace }).count == 1
+            && HarperChecker.isKnownEnglishWord(word)
+    }
+
     private static func isUsefulMapping(heard: String, intended: String) -> Bool {
         guard heard.count >= 2, !intended.isEmpty,
               heard.lowercased() != intended.lowercased()
@@ -228,6 +252,10 @@ enum LearnedStore {
             ("The base ten pipeline is fast.", "The Baseten pipeline is fast.",
              [("base ten", "Baseten")]),
             ("Hello world.", "Hello world.", []),
+            ("I need a new team today.", "I need a new theme today.", []),
+            ("He said \"team\" today.", "He said \"theme\" today.", []),
+            ("He said (team) today.", "He said (theme) today.", []),
+            ("Put it there today.", "Put it here today.", []),
             ("I met so ren and Anna.", "I met Søren and Anna.",
              [("so ren", "Søren")]),
         ]

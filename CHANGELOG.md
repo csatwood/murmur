@@ -1,5 +1,12 @@
 # Changelog
 
+## Personal fork: selected upstream corrections (build 4.3)
+
+- Protect known user vocabulary during Harper grammar checking using the matching upstream Rust archive and headers.
+- Reject ordinary-word substitutions inferred from transcript edits while preserving deliberate training and saved mappings.
+- Preserve abbreviation commas and lowercase letters within abbreviations.
+- Add isolated store/grammar regression tests; defer the unsafe upstream restart-command rule and broader engine/UI updates.
+
 ## Personal fork: fast dictation (build 4.2)
 
 - Skip automatic AI rewriting for As spoken dictation by default.
