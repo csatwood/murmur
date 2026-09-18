@@ -87,11 +87,13 @@ struct TextFormatter {
         result = result.replacingOccurrences(
             of: " +([,.;:!?])", with: "$1", options: .regularExpression)
         // An abbreviation period followed by a comma ("p.m.,") is not a
-        // duplicate. Only collapse the known artifacts ",." and "..".
+        // duplicate. Preserve that pair while cleaning other punctuation artifacts.
         result = result.replacingOccurrences(
             of: ",\\.", with: ".", options: .regularExpression)
         result = result.replacingOccurrences(
             of: "\\.{2,}", with: ".", options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: "([,;:!?])[,.]+", with: "$1", options: .regularExpression)
         // Trim each line.
         result = result
             .components(separatedBy: "\n")
@@ -119,6 +121,7 @@ struct TextFormatter {
                 // begin a new sentence ("p.m." must not become "p.M.").
                 capitalizeNext = index + 1 == characters.count
                     || characters[index + 1].isWhitespace
+                    || "\"'".contains(characters[index + 1])
             } else if !character.isWhitespace, !"\"'([{".contains(character) {
                 capitalizeNext = false
             }
@@ -154,6 +157,11 @@ struct TextFormatter {
             ("Ask the Dr., then leave.", "Ask the Dr., then leave."),
             ("Wait,. let me think", "Wait. Let me think."),
             ("Sorry.. let me think", "Sorry. Let me think."),
+            ("hello,, world", "Hello, world."),
+            ("really?, no", "Really? No."),
+            ("He said \"hello.\" then left.", "He said \"hello.\" Then left."),
+            ("He said 'hello.' then left.", "He said 'hello.' Then left."),
+            ("Visit example.com today.", "Visit example.com today."),
             ("Do not forget that, it matters.", "Do not forget that, it matters."),
             ("He said \"scratch that, start again\" yesterday.",
              "He said \"scratch that, start again\" yesterday."),
