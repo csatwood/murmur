@@ -9,6 +9,7 @@ trap 'rm -rf "$CORRECTIONS_TMP"' EXIT
 swiftc -O -sdk "$CORRECTIONS_SDK" \
     -F Vendor/harper.xcframework/macos-arm64 -framework harper \
     Sources/Murmur/TextFormatter.swift Sources/Murmur/LearnedStore.swift \
-    Sources/Murmur/HarperChecker.swift Tests/CorrectionsHarness.swift \
+    Sources/Murmur/HarperChecker.swift Sources/Murmur/SnippetStore.swift \
+    Tests/CorrectionsHarness.swift \
     -o "$CORRECTIONS_TMP/corrections-tests"
 "$CORRECTIONS_TMP/corrections-tests"

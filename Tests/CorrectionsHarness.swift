@@ -11,11 +11,6 @@ enum AppPaths {
     }()
 }
 
-enum SnippetStore {
-    struct Snippet { let trigger: String }
-    static func load() -> [Snippet] { [] }
-}
-
 @main struct CorrectionsHarness {
     static func main() throws {
         defer { try? FileManager.default.removeItem(at: AppPaths.supportDirectory) }
@@ -69,6 +64,24 @@ enum SnippetStore {
         let fullResult = HarperChecker.fix(sentence, vocabulary: fullVocabulary)
         check(fullResult.contains("Supabase") && !fullResult.contains("the the"),
               "Harper protects dictionary words beyond the recognition limit")
+
+        // Use real snippet persistence and expansion, with no dictionary or
+        // learned terms that could accidentally protect the expansion.
+        LearnedStore.save(LearnedData())
+        try JSONEncoder().encode([String: String]()).write(to: TextFormatter.dictionaryURL)
+        SnippetStore.save([Snippet(trigger: "super base", expansion: "Supabase")])
+        let expanded = SnippetStore.expand(in: TextFormatter(dictionary: [:]).format(
+            "I use super base for the the database."))
+        check(expanded.contains("Supabase"), "real snippet store expands the saved trigger")
+        let snippetResult = HarperChecker.fix(expanded, vocabulary: LearnedStore.protectedVocabulary())
+        check(snippetResult.contains("Supabase") && !snippetResult.contains("the the"),
+              "snippet expansion survives Harper while grammar fixes remain active")
+        check(LearnedStore.biasTerms().contains("super base")
+                && !LearnedStore.biasTerms().contains("Supabase"),
+              "recognition uses snippet triggers without adding expansion text")
+        LearnedStore.save(LearnedData(terms: (0..<300).map { "Term\($0)" }))
+        check(HarperChecker.fix(expanded, vocabulary: LearnedStore.protectedVocabulary())
+                .contains("Supabase"), "snippet protection survives the recognition vocabulary limit")
 
         // Component timing only; no brittle timing assertion in the test suite.
         for vocabulary in [[], ["Supabase"]] as [[String]] {
