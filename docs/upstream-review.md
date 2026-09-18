@@ -58,3 +58,7 @@ The restart-command regex in `676ee24` must not be copied unchanged. It checks t
 An upstream automatic-learning regression case used a substitution at the end of a sentence, where the existing diff algorithm already returned no mapping. This port puts the substituted word in the middle, observes the incorrect mapping before the fix, and verifies it is rejected afterward. The separate end-of-sentence extraction limitation is not changed here.
 
 The initial two-file merge-conflict report above applied to the microphone commit. Later local changes can introduce additional conflicts during a full upstream merge; rerun the analysis when that upgrade is undertaken. Selective ports do not mark whole upstream commits as merged, so GitHub's behind count is not a list of missing fixes.
+
+### Punctuation preservation boundary
+
+The formatter intentionally preserves every period-comma pair (`.,`). This keeps abbreviation commas, including user-defined abbreviations, intact without guessing which words are abbreviations. It can also leave a malformed pair such as `Wait.,` unchanged. Abbreviation-aware repair is outside this port. Other duplicate punctuation, including `,,` and `?,`, is still cleaned, and sentence capitalization through closing ASCII quotes is retained.

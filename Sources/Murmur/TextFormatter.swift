@@ -162,6 +162,7 @@ struct TextFormatter {
             ("He said \"hello.\" then left.", "He said \"hello.\" Then left."),
             ("He said 'hello.' then left.", "He said 'hello.' Then left."),
             ("Visit example.com today.", "Visit example.com today."),
+            ("Wait., let me think", "Wait., let me think."),
             ("Do not forget that, it matters.", "Do not forget that, it matters."),
             ("He said \"scratch that, start again\" yesterday.",
              "He said \"scratch that, start again\" yesterday."),
