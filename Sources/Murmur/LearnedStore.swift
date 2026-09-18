@@ -188,7 +188,8 @@ enum LearnedStore {
                 let heard = normalizePhrase(removed.joined(separator: " "))
                 let intended = added.joined(separator: " ")
                     .trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-                if isUsefulMapping(heard: heard, intended: intended) {
+                if isUsefulMapping(heard: heard, intended: intended),
+                   !isOrdinaryWord(heard) {
                     pairs.append((heard, intended))
                 }
             }
@@ -211,6 +212,14 @@ enum LearnedStore {
             .trimmingCharacters(in: CharacterSet(charactersIn: ".,!?;:"))
     }
 
+    /// Diff-derived single-word replacements can be ordinary edits rather
+    /// than pronunciation fixes. Be conservative when learning them
+    /// automatically; explicit Voice Training and saved mappings stay intact.
+    private static func isOrdinaryWord(_ phrase: String) -> Bool {
+        phrase.split(whereSeparator: { $0.isWhitespace }).count == 1
+            && HarperChecker.isKnownEnglishWord(phrase)
+    }
+
     private static func isUsefulMapping(heard: String, intended: String) -> Bool {
         guard heard.count >= 2, !intended.isEmpty,
               heard.lowercased() != intended.lowercased()
@@ -228,6 +237,8 @@ enum LearnedStore {
             ("The base ten pipeline is fast.", "The Baseten pipeline is fast.",
              [("base ten", "Baseten")]),
             ("Hello world.", "Hello world.", []),
+            ("I need a new team today.", "I need a new theme today.", []),
+            ("Put it there today.", "Put it here today.", []),
             ("I met so ren and Anna.", "I met Søren and Anna.",
              [("so ren", "Søren")]),
         ]

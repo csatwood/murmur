@@ -2,7 +2,7 @@
 
 Compared the fork's Murmur 2.1.0 base (`0627909`) with upstream `main` at [`b5c5667`](https://github.com/janisbelozerovs-dev/murmur/commit/b5c5667). There are nine upstream commits after that base. The fork's microphone commit is `932708e`; the fast-dictation changes follow it.
 
-This is a review, not an upstream merge. The fork deliberately remains on its tested base for this performance update.
+The fork remains based on its tested Murmur 2.1.0 lineage. Selected correctness fixes are ported below; this is not a merge of the complete upstream history.
 
 ## Changes worth considering
 
@@ -41,3 +41,20 @@ Do not enable that installer for this fork until it targets verified fork releas
 2. Benchmark recognition changes before adopting vocabulary boosting or another runtime.
 3. Integrate the Settings/Notetaker/profile upgrade as a separate change, explicitly resolving the controls above.
 4. Add fork-specific update delivery only when fork releases and signing verification are in place.
+
+## Selected correctness ports
+
+The follow-up correctness branch selectively adapts:
+
+- [`dd05b3b`](https://github.com/janisbelozerovs-dev/murmur/commit/dd05b3b): Harper vocabulary support, matching Rust source/C headers/archive, rebuild script, and a guard against automatically learning ordinary-word substitutions. Live English grammar checking and the CLI grammar check both supply the existing user vocabulary. The guard is limited to automatic extraction so explicit Voice Training and existing mappings remain valid. This does not import developer-app detection, fuzzy developer vocabulary or CTC recognition boosting.
+- [`f319a8a`](https://github.com/janisbelozerovs-dev/murmur/commit/f319a8a): narrow duplicate-punctuation handling so abbreviation commas survive. A local companion fix preserves lowercase letters after periods within abbreviations. Tests cover real `p.m.,` and `a.m.,` inputs, not only unpunctuated `5pm,`.
+
+The Harper archive's Git blob matches upstream `dd05b3b` exactly. App-linked Swift tests check vocabulary and grammar together; isolated store tests verify deliberate training and existing saved mappings. The Rust toolchain was unavailable locally, so the Rust source suite was not run.
+
+### Deferred after closer review
+
+The restart-command regex in `676ee24` must not be copied unchanged. It checks the phrase's trailing boundary but can discard ordinary text such as “Do not forget that, it matters” or a quoted “scratch that” phrase. This port leaves restart handling unchanged and adds preservation tests. The associated AI prompt changes and Parakeet migration also remain deferred.
+
+An upstream automatic-learning regression case used a substitution at the end of a sentence, where the existing diff algorithm already returned no mapping. This port puts the substituted word in the middle, observes the incorrect mapping before the fix, and verifies it is rejected afterward. The separate end-of-sentence extraction limitation is not changed here.
+
+The initial two-file merge-conflict report above applied to the microphone commit. Later local changes can introduce additional conflicts during a full upstream merge; rerun the analysis when that upgrade is undertaken. Selective ports do not mark whole upstream commits as merged, so GitHub's behind count is not a list of missing fixes.
