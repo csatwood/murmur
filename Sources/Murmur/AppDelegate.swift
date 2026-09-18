@@ -939,7 +939,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                     // nearest English one instead of leaving them alone.
                     if !formatted.isEmpty, isEnglishDictation {
                         formatted = HarperChecker.fix(
-                            formatted, vocabulary: LearnedStore.biasTerms())
+                            formatted, vocabulary: LearnedStore.protectedVocabulary())
                     }
                 }
                 dictationLog.info("pipeline done: \(formatted.count) chars")

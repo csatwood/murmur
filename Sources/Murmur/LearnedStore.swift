@@ -117,6 +117,12 @@ enum LearnedStore {
     /// Vocabulary handed to the speech model before recognition:
     /// taught terms, learned spellings, dictionary spellings, snippet triggers.
     static func biasTerms() -> [String] {
+        Array(protectedVocabulary().prefix(300))
+    }
+
+    /// Grammar protection must include dictionary words even when recognition's
+    /// contextual vocabulary limit has been reached.
+    static func protectedVocabulary() -> [String] {
         var terms: [String] = []
         var seen = Set<String>()
         func insert(_ term: String) {
@@ -132,7 +138,7 @@ enum LearnedStore {
         learned.corrections.map(\.intended).forEach(insert)
         TextFormatter.loadDictionary().values.forEach(insert)
         SnippetStore.load().map(\.trigger).forEach(insert)
-        return Array(terms.prefix(300))
+        return terms
     }
 
     // MARK: - Diff extraction

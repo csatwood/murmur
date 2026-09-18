@@ -83,7 +83,7 @@ struct MurmurMain {
             exit(0)
 
         case .harperFix(let text):
-            print(HarperChecker.fix(text, vocabulary: LearnedStore.biasTerms()))
+            print(HarperChecker.fix(text, vocabulary: LearnedStore.protectedVocabulary()))
             exit(0)
 
         case .transform(let text):

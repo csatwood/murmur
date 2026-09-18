@@ -50,15 +50,25 @@ enum SnippetStore {
         LearnedStore.save(LearnedData(terms: ["Supabase"]))
         let sentence = "I set up the the database using Supabase yesterday."
         let learnedResult = HarperChecker.fix(
-            TextFormatter(dictionary: [:]).format(sentence), vocabulary: LearnedStore.biasTerms())
+            TextFormatter(dictionary: [:]).format(sentence), vocabulary: LearnedStore.protectedVocabulary())
         check(learnedResult.contains("Supabase") && !learnedResult.contains("the the"),
               "learned vocabulary reaches Harper without disabling grammar fixes")
 
         LearnedStore.save(LearnedData())
         try JSONEncoder().encode(["super base": "Supabase"]).write(to: TextFormatter.dictionaryURL)
-        let dictionaryResult = HarperChecker.fix(sentence, vocabulary: LearnedStore.biasTerms())
+        let dictionaryResult = HarperChecker.fix(sentence, vocabulary: LearnedStore.protectedVocabulary())
         check(dictionaryResult.contains("Supabase") && !dictionaryResult.contains("the the"),
               "dictionary vocabulary reaches Harper without disabling grammar fixes")
+
+        LearnedStore.save(LearnedData(terms: (0..<300).map { "Term\($0)" }))
+        let fullVocabulary = LearnedStore.protectedVocabulary()
+        check(fullVocabulary.contains("Supabase"),
+              "dictionary protection survives 300 learned terms")
+        check(LearnedStore.biasTerms().count == 300,
+              "recognition vocabulary retains its 300-term limit")
+        let fullResult = HarperChecker.fix(sentence, vocabulary: fullVocabulary)
+        check(fullResult.contains("Supabase") && !fullResult.contains("the the"),
+              "Harper protects dictionary words beyond the recognition limit")
 
         // Component timing only; no brittle timing assertion in the test suite.
         for vocabulary in [[], ["Supabase"]] as [[String]] {
