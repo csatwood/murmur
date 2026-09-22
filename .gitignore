@@ -20,3 +20,11 @@ Vendor/harper-ffi/target/
 
 # Xcode-generated SPM state, not the Package.swift-managed sources
 .swiftpm/
+
+# AetherOS generated agent-context files. Never commit these: they carry
+# personal and faith context and this is a public fork. Belt and braces
+# behind the rulesync ownership gate (Going-into-the-Aether/UAH#2069).
+CLAUDE.md
+CODEX.md
+GEMINI.md
+KIRO.md
