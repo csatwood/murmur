@@ -39,6 +39,12 @@
   example macOS 27), which otherwise breaks the SwiftUI `@State` macro lookup
   with `plugin for module 'SwiftUIMacros' not found`. An explicit `--sdk`
   still wins, and a machine whose default SDK already matches is unaffected.
+- **Parakeet no longer hangs on a stalled model download**: the one-time
+  Parakeet model fetch now races a wall-clock timeout (300s for a download,
+  60s for a cached load), so a stalled network fetch fails with a clear error
+  instead of freezing the app until the OS kills it. The on-disk model
+  existence check also moved off the main actor so it no longer stutters the
+  UI.
 
 ## v2.0.1 — 2026-08-25
 
