@@ -32,6 +32,14 @@
   v2, multilingual v3). Vocabulary biasing isn't available for it yet,
   unlike the two Whisper engines.
 
+### Fixed
+
+- **Build on newer command-line tools**: `make_app.sh` now auto-selects the
+  newest installed macOS 26 SDK when the toolchain default is newer (for
+  example macOS 27), which otherwise breaks the SwiftUI `@State` macro lookup
+  with `plugin for module 'SwiftUIMacros' not found`. An explicit `--sdk`
+  still wins, and a machine whose default SDK already matches is unaffected.
+
 ## v2.0.1 — 2026-08-25
 
 Fixes for the floating nav-bar HUD (the small pill that appears near the
