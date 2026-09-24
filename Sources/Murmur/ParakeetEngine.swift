@@ -80,6 +80,14 @@ final class ParakeetEngine {
     /// Set only after the pipeline has fully loaded.
     private var readyModel: String?
 
+    /// Wall-clock ceilings for the load race in `pipeline(model:)`. A first-run
+    /// download fetches ~450 MB from HuggingFace, so it gets a generous window;
+    /// a load from an already-cached model touches only local disk and the
+    /// Neural Engine compile, so it gets a short one. These bound a *stall*,
+    /// not normal slowness: a healthy download or load finishes well inside.
+    nonisolated static let downloadTimeout: Double = 300
+    nonisolated static let loadTimeout: Double = 60
+
     /// True once the pipeline is loaded in memory and can transcribe now.
     func isReady(model: String) -> Bool {
         readyModel == model
@@ -92,11 +100,20 @@ final class ParakeetEngine {
 
     func isModelDownloaded(_ model: String) -> Bool {
         if downloadedModels.contains(model) { return true }
-        let version = Self.version(for: model)
-        let directory = AsrModels.defaultCacheDirectory(for: version)
-        let exists = AsrModels.modelsExist(at: directory, version: version)
+        let exists = Self.modelExistsOnDisk(model)
         if exists { downloadedModels.insert(model) }
         return exists
+    }
+
+    /// The on-disk existence probe walks the model cache directory, so it must
+    /// not run on the main actor: `ParakeetEngine` is `@MainActor`, and doing
+    /// filesystem work on the main thread stutters the UI. `nonisolated` moves
+    /// it off. `AsrModels.modelsExist` is a pure static filesystem check with
+    /// no shared mutable state, so it is safe to call from any context.
+    nonisolated static func modelExistsOnDisk(_ model: String) -> Bool {
+        let version = Self.version(for: model)
+        let directory = AsrModels.defaultCacheDirectory(for: version)
+        return AsrModels.modelsExist(at: directory, version: version)
     }
 
     /// Kicks off model load/download in the background.
@@ -117,11 +134,33 @@ final class ParakeetEngine {
         onStatus?(needsDownload
             ? "Downloading Parakeet model (one-time)"
             : "Loading Parakeet model")
+        let timeout = needsDownload ? Self.downloadTimeout : Self.loadTimeout
         let task = Task { () -> AsrManager in
-            let models = try await AsrModels.downloadAndLoad(version: version)
-            let manager = AsrManager(config: .default)
-            try await manager.loadModels(models)
-            return manager
+            // Race the real load against a timeout. Without this, a stalled
+            // model download (a network hang on the one-time HuggingFace
+            // fetch) leaves this await pending forever: the status stays
+            // "Downloading" and the app hangs, then the OS kills it as
+            // unresponsive. On timeout we cancel the load and throw, so the
+            // caller surfaces a real error instead of hanging.
+            try await withThrowingTaskGroup(of: AsrManager.self) { group in
+                group.addTask {
+                    let models = try await AsrModels.downloadAndLoad(version: version)
+                    let manager = AsrManager(config: .default)
+                    try await manager.loadModels(models)
+                    return manager
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                    throw ParakeetEngineError.modelLoadTimedOut(
+                        model: model, seconds: timeout, wasDownloading: needsDownload)
+                }
+                guard let manager = try await group.next() else {
+                    throw ParakeetEngineError.modelLoadTimedOut(
+                        model: model, seconds: timeout, wasDownloading: needsDownload)
+                }
+                group.cancelAll()
+                return manager
+            }
         }
         loadTask = task
         defer { onStatus?(nil) }
@@ -155,10 +194,32 @@ final class ParakeetEngine {
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func version(for model: String) -> AsrModelVersion {
+    nonisolated private static func version(for model: String) -> AsrModelVersion {
         switch model {
         case "v2": return .v2
         default: return .v3
+        }
+    }
+}
+
+/// Errors surfaced by `ParakeetEngine` to the caller so a stall becomes a
+/// visible failure rather than an indefinite hang.
+enum ParakeetEngineError: LocalizedError {
+    /// The model download or load exceeded its wall-clock ceiling and was
+    /// cancelled. `wasDownloading` distinguishes the one-time fetch from a
+    /// load of an already-cached model, so the message can guide the user.
+    case modelLoadTimedOut(model: String, seconds: Double, wasDownloading: Bool)
+
+    var errorDescription: String? {
+        switch self {
+        case let .modelLoadTimedOut(model, seconds, wasDownloading):
+            let secs = Int(seconds)
+            if wasDownloading {
+                return "Downloading the Parakeet \(model) model timed out after "
+                    + "\(secs)s. Check your network connection and try again; the "
+                    + "download resumes from where it stopped."
+            }
+            return "Loading the Parakeet \(model) model timed out after \(secs)s."
         }
     }
 }
