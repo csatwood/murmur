@@ -4,7 +4,62 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-swift build -c release "$@"
+# The app targets macOS 26 (see LSMinimumSystemVersion below). This script was
+# authored on a macOS 26 system, where the command-line tools' default SDK also
+# matched. On a machine whose command-line tools have since moved to a newer
+# default SDK (for example macOS 27), building against that default breaks the
+# SwiftUI macro plugin lookup: the compiler reports "external macro
+# implementation type 'SwiftUIMacros.StateMacro' could not be found ... plugin
+# for module 'SwiftUIMacros' not found" for every @State. Building against an
+# installed SDK that matches the target avoids it.
+#
+# So when the caller has not already chosen an SDK, and the default SDK is newer
+# than the target, auto-select the newest installed macOS 26 SDK. An explicit
+# --sdk always wins, and a machine whose default already matches is unchanged.
+TARGET_SDK_MAJOR=26
+
+caller_set_sdk=0
+for arg in "$@"; do
+    if [ "$arg" = "--sdk" ]; then
+        caller_set_sdk=1
+        break
+    fi
+done
+
+sdk_args=()
+if [ "$caller_set_sdk" -eq 0 ]; then
+    default_sdk_path="$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)"
+    default_sdk_version="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null || true)"
+    default_sdk_major="${default_sdk_version%%.*}"
+    if [ -n "$default_sdk_major" ] && [ "$default_sdk_major" -gt "$TARGET_SDK_MAJOR" ] 2>/dev/null; then
+        # A named lookup like `xcrun --sdk macosx26` fails: xcrun wants the full
+        # minor version, which we cannot assume. Enumerate the installed SDKs
+        # instead and pick the newest one matching the target major.
+        sdk_dir="$(dirname "$default_sdk_path")"
+        best_sdk=""
+        best_ver=""
+        for candidate in "$sdk_dir"/MacOSX${TARGET_SDK_MAJOR}*.sdk; do
+            [ -d "$candidate" ] || continue
+            ver="$(/usr/libexec/PlistBuddy -c 'Print Version' "$candidate/SDKSettings.plist" 2>/dev/null || true)"
+            [ -n "$ver" ] || continue
+            if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+                best_sdk="$candidate"
+                best_ver="$ver"
+            fi
+        done
+        if [ -n "$best_sdk" ]; then
+            echo "Default SDK is $default_sdk_version but the app targets macOS $TARGET_SDK_MAJOR;" >&2
+            echo "building against $best_sdk ($best_ver) to keep the SwiftUI macro plugin resolvable." >&2
+            sdk_args=(--sdk "$best_sdk")
+        else
+            echo "WARNING: default SDK is $default_sdk_version but no macOS $TARGET_SDK_MAJOR SDK is" >&2
+            echo "installed. Building against the default may fail on the SwiftUI macros; pass" >&2
+            echo "--sdk /path/to/MacOSX${TARGET_SDK_MAJOR}.sdk or install the matching SDK." >&2
+        fi
+    fi
+fi
+
+swift build -c release ${sdk_args[@]+"${sdk_args[@]}"} "$@"
 
 APP="build/Murmur.app"
 rm -rf "$APP"

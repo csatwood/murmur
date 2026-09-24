@@ -123,6 +123,20 @@ To select an installed SDK, pass Swift build arguments through the script:
 ./scripts/make_app.sh --disable-automatic-resolution --sdk /path/to/MacOSX.sdk
 ```
 
+### SDK selection on newer command-line tools
+
+The app targets macOS 26, and this build was authored on a macOS 26 system
+whose command-line tools defaulted to a matching SDK. On a machine whose
+command-line tools have since updated to a newer default SDK (for example macOS
+27), building against that default breaks the SwiftUI macro plugin lookup and
+fails with `plugin for module 'SwiftUIMacros' not found` on every `@State`.
+
+`make_app.sh` handles this: when you do not pass `--sdk` and the default SDK is
+newer than macOS 26, it auto-selects the newest installed macOS 26 SDK. A
+machine whose default SDK already matches is unaffected. If no macOS 26 SDK is
+installed it warns and falls through, so pass `--sdk` or install the matching
+SDK in that case.
+
 ### One-time permissions
 
 1. **Microphone** — allow when prompted on first dictation.
