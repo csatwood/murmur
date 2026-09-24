@@ -211,6 +211,17 @@ private struct NavBarHUDView: View {
                     .opacity(iconsVisible ? 1 : 0)
                     .allowsHitTesting(pillHovered)
             }
+            // Pin the ZStack's own width to the current capsule size. Without
+            // this the ZStack sizes to its widest child — `pillIcons`, always
+            // 191pt even while hidden — so at rest a 191pt stack is centred
+            // inside the 64pt panel and its overflow anchoring pushed the
+            // 48pt reveal-pill off the panel's centre (visibly right of the
+            // notch). Framing to `shapeSize.width` makes the stack track the
+            // capsule, so `maxWidth: .infinity` below centres the pill the
+            // panel is actually sized for. `pillIcons` still overflows this
+            // frame while expanding, which is fine: it is only shown
+            // (`iconsVisible`) once the capsule has grown to its full width.
+            .frame(width: shapeSize.width)
             .padding(.top, 8)
             Spacer(minLength: 0)
         }
