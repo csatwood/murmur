@@ -37,24 +37,31 @@ enum HUDState: Equatable {
 /// panels dock at the identical screen spot (they're mutually exclusive,
 /// never both visible), so both compute their origin the same way.
 enum HUDDock {
-    /// Bottom-centre of whichever screen the pointer is on. Anchoring to the
-    /// text caret would need an Accessibility round-trip per frame and jumps
-    /// around as text reflows; a fixed spot is calmer and always findable.
+    /// Top-centre of whichever screen the pointer is on, tucked just under
+    /// the menu bar and aligned with the notch. Anchoring to the text caret
+    /// would need an Accessibility round-trip per frame and jumps around as
+    /// text reflows; a fixed spot is calmer and always findable. The top
+    /// edge is chosen over the bottom so the pill sits with the notch rather
+    /// than fighting the Dock, whose height shifts the old bottom anchor
+    /// around and left the minimized pill visibly misaligned.
     ///
-    /// The gap above the bottom edge is a small fraction of screen height
+    /// The gap below the top edge is a small fraction of screen height
     /// (0.8%, floored at 6pt) rather than one fixed number — a flat gap
     /// looks right on a laptop display but noticeably oversized floating
     /// under everything on a large external monitor; scaling it keeps the
-    /// pill reading as "just above the edge" on both. `visibleFrame` already
-    /// excludes the Dock and menu bar, so this is a gap above whichever of
-    /// those is actually the nearest boundary, not a fixed screen coordinate.
+    /// pill reading as "just below the edge" on both. `visibleFrame` already
+    /// excludes the menu bar (and, on notched displays, the notch sits
+    /// inside that excluded band), so `frame.maxY` is the line just under
+    /// the menu bar, not a fixed screen coordinate.
     static func origin(for size: NSSize) -> NSPoint {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
         guard let frame = screen?.visibleFrame else { return .zero }
-        let bottomGap = max(6, frame.height * 0.008)
-        return NSPoint(x: frame.midX - size.width / 2, y: frame.minY + bottomGap)
+        let topGap = max(6, frame.height * 0.008)
+        return NSPoint(
+            x: frame.midX - size.width / 2,
+            y: frame.maxY - size.height - topGap)
     }
 }
 

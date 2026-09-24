@@ -162,10 +162,10 @@ private struct NavBarHUDView: View {
     @State private var pillHovered = false
     @State private var openPopover: NavPopoverKind?
     // The icon that opens a popover is a 30pt button; the popover itself
-    // renders ~44pt above it (`.offset(y: -44)`), so there's a real gap of
+    // renders ~44pt below it (`.offset(y: 44)`), so there's a real gap of
     // dead space between the two. Closing the instant the cursor leaves the
     // icon (as a plain `onHover` would) means the popover vanishes before a
-    // cursor moving from the icon up into it ever arrives — you could see
+    // cursor moving from the icon down into it ever arrives — you could see
     // "Meeting Notes" or "Summary" but never actually reach and click one.
     // `closeTask` gives that transit a grace window: leaving the icon *or*
     // the popover schedules a close a moment later, but arriving at either
@@ -198,8 +198,7 @@ private struct NavBarHUDView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 0)
-            ZStack(alignment: .bottom) {
+            ZStack(alignment: .top) {
                 Capsule()
                     .fill(HUDStyle.pillFill)
                     .overlay(Capsule().stroke(HUDStyle.pillBorder, lineWidth: 1))
@@ -212,9 +211,10 @@ private struct NavBarHUDView: View {
                     .opacity(iconsVisible ? 1 : 0)
                     .allowsHitTesting(pillHovered)
             }
-            .padding(.bottom, 8)
+            .padding(.top, 8)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
         .onHover { inside in
             if inside {
@@ -358,7 +358,7 @@ private struct NavBarHUDView: View {
         .onHover { inside in
             if inside { openPopoverNow(.listen) } else { scheduleClose(.listen) }
         }
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .top) {
             if openPopover == .listen {
                 NavPopover {
                     NavPopoverHeader("Language")
@@ -388,7 +388,7 @@ private struct NavBarHUDView: View {
                         app.setEngine("parakeet")
                     }
                 }
-                .offset(y: -44)
+                .offset(y: 44)
                 .onHover { inside in
                     if inside { openPopoverNow(.listen) } else { scheduleClose(.listen) }
                 }
@@ -413,7 +413,7 @@ private struct NavBarHUDView: View {
             .onHover { inside in
                 if inside { openPopoverNow(.quick) } else { scheduleClose(.quick) }
             }
-            .overlay(alignment: .bottom) {
+            .overlay(alignment: .top) {
                 if openPopover == .quick {
                     NavPopover {
                         NavPopoverHeader("Templates")
@@ -433,7 +433,7 @@ private struct NavBarHUDView: View {
                             }
                         }
                     }
-                    .offset(y: -44)
+                    .offset(y: 44)
                     .onHover { inside in
                         if inside { openPopoverNow(.quick) } else { scheduleClose(.quick) }
                     }
@@ -448,7 +448,7 @@ private struct NavBarHUDView: View {
             .onHover { inside in
                 if inside { openPopoverNow(.more) } else { scheduleClose(.more) }
             }
-            .overlay(alignment: .bottom) {
+            .overlay(alignment: .top) {
                 if openPopover == .more {
                     NavPopover {
                         NavPopoverRow(title: "Ask Murmur", icon: .ask) {
@@ -466,7 +466,7 @@ private struct NavBarHUDView: View {
                             navigate(to: .settings)
                         }
                     }
-                    .offset(y: -44)
+                    .offset(y: 44)
                     .onHover { inside in
                         if inside { openPopoverNow(.more) } else { scheduleClose(.more) }
                     }
@@ -545,7 +545,7 @@ private struct NavPopover<Content: View>: View {
             .background(RoundedRectangle(cornerRadius: 12).fill(HUDStyle.popoverFill))
             // `0 20px 40px rgba(20,20,19,.32)` in Main.dc.html.
             .shadow(color: .black.opacity(0.32), radius: 20, y: 20)
-            .transition(.opacity.combined(with: .scale(0.96, anchor: .bottom)))
+            .transition(.opacity.combined(with: .scale(0.96, anchor: .top)))
     }
 }
 
