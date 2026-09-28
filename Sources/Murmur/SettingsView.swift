@@ -347,7 +347,14 @@ struct SettingsPage: View {
     }
 
     private func microphoneLabel(_ uid: String) -> String {
-        if uid.isEmpty { return "System default" }
+        if uid.isEmpty {
+            // Show what "System default" actually resolves to, since the smart
+            // ranking may not match the raw macOS default (it avoids Bluetooth).
+            if let resolved = AudioRecorder.smartDefaultMicrophone() {
+                return "System default (\(resolved.name))"
+            }
+            return "System default"
+        }
         return microphones.first { $0.id == uid }?.name ?? "Selected microphone (unavailable)"
     }
 

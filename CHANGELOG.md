@@ -45,6 +45,15 @@
   instead of freezing the app until the OS kills it. The on-disk model
   existence check also moved off the main actor so it no longer stutters the
   UI.
+- **Bluetooth microphones no longer break recording** (the `-10868` error): a
+  Bluetooth input like AirPods forces macOS into a 24 kHz mode that
+  `AVAudioEngine` rejects at start. "System default" is now smart: it ranks
+  inputs by connection type, preferring a wired external mic over the built-in
+  one and using Bluetooth only as a last resort, so dictation stays on a wired
+  mic even when AirPods seize the system default. If a start still fails, it
+  fails over to the next-best mic and, if all fail, shows an actionable message
+  instead of the raw error. Settings shows which device "System default"
+  resolved to.
 
 ## v2.0.1 — 2026-08-25
 
