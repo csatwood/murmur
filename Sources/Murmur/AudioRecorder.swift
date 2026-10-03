@@ -130,6 +130,18 @@ final class AudioRecorder {
         engine = AVAudioEngine()
         let input = engine.inputNode
         try selectMicrophone(microphone.deviceID, on: input)
+
+        // Reconcile the device's hardware sample rate with the rate the engine's
+        // input node settles on. This is the real cause of the -10868
+        // (kAudioUnitErr_FormatNotSupported) failures: AVAudioEngine.start()
+        // rejects a device whose nominal rate differs from the node's rate. A
+        // Scarlett 8i6 sitting at 44.1 kHz fails; the same device at 48 kHz
+        // starts. AirPods at 24 kHz HFP are the same mismatch at a different
+        // rate. Setting the device to the node's rate before starting removes
+        // the mismatch; if the device cannot take that rate, the start below
+        // throws and the caller fails over to the next candidate.
+        Self.reconcileSampleRate(microphone.deviceID, toNodeRate: input.outputFormat(forBus: 0).sampleRate)
+
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(
@@ -450,6 +462,82 @@ final class AudioRecorder {
         return defaultID
     }
 
+    /// Align a device's hardware nominal sample rate with the rate the engine's
+    /// input node expects, so `AVAudioEngine.start()` does not reject the device
+    /// with `kAudioUnitErr_FormatNotSupported` (-10868).
+    ///
+    /// Measured on forge 2026-10-02: a Scarlett 8i6 at 44.1 kHz failed with
+    /// -10868 while the node reported 48 kHz; setting the device to 48 kHz made
+    /// the identical device start cleanly. AirPods at 24 kHz HFP are the same
+    /// mismatch at a different rate. This is the root cause behind the earlier
+    /// "Bluetooth" symptom.
+    ///
+    /// Best-effort: if the device does not support the node's rate, or the set
+    /// fails, this leaves the device as-is and the subsequent `engine.start()`
+    /// either succeeds anyway or throws, letting the caller fail over. The
+    /// read-and-compare avoids a needless rate change (and the audible click it
+    /// can cause) when the rates already match.
+    static func reconcileSampleRate(_ deviceID: AudioDeviceID, toNodeRate nodeRate: Double) {
+        guard nodeRate > 0 else { return }
+
+        var rateAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var current: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(deviceID, &rateAddr, 0, nil, &size, &current) == noErr
+        else { return }
+
+        // Already matching (within a tolerance; sample rates are exact in
+        // practice but compare as Double): nothing to do.
+        if abs(current - nodeRate) < 1.0 { return }
+
+        // Only set a rate the device actually advertises, so an unsupported
+        // value is never forced.
+        guard Self.deviceSupportsRate(deviceID, rate: nodeRate) else {
+            dictationLog.info("mic route: device \(deviceID) at \(current)Hz cannot take node rate \(nodeRate)Hz; leaving as-is")
+            return
+        }
+
+        var target = Float64(nodeRate)
+        let status = AudioObjectSetPropertyData(
+            deviceID, &rateAddr, 0, nil, UInt32(MemoryLayout<Float64>.size), &target)
+        if status == noErr {
+            dictationLog.info("mic route: set device \(deviceID) sample rate \(current)Hz -> \(nodeRate)Hz to match engine")
+            // The hardware rate change is not instantaneous; give it a brief
+            // moment to settle before the engine starts, or the start can still
+            // observe the stale rate.
+            Thread.sleep(forTimeInterval: 0.1)
+        } else {
+            dictationLog.error("mic route: failed to set device \(deviceID) rate to \(nodeRate)Hz (status \(status))")
+        }
+    }
+
+    /// Whether a device advertises support for a given nominal sample rate.
+    private static func deviceSupportsRate(_ deviceID: AudioDeviceID, rate: Double) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0
+        else { return false }
+        let count = Int(size) / MemoryLayout<AudioValueRange>.size
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: count)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ranges) == noErr
+        else { return false }
+        return rateSupported(rate, in: ranges.map { ($0.mMinimum, $0.mMaximum) })
+    }
+
+    /// Pure range-matching behind `deviceSupportsRate`, split out so it is
+    /// testable without real hardware. Ranges are inclusive; a discrete rate
+    /// advertises as `min == max == rate`. A 1 Hz tolerance absorbs the
+    /// Double representation of exact rates like 44100 and 48000.
+    static func rateSupported(_ rate: Double, in ranges: [(Double, Double)]) -> Bool {
+        ranges.contains { rate >= $0.0 - 1.0 && rate <= $0.1 + 1.0 }
+    }
+
     /// A device can be built-in and output-only (the Mac's speakers) — this
     /// confirms it actually has an input side before we route to it.
     private static func hasInputStreams(_ deviceID: AudioDeviceID) -> Bool {
@@ -517,6 +605,26 @@ final class AudioRecorder {
               "built-in transport classifies as builtIn")
         check(Transport.classify(kAudioDeviceTransportTypeUnknown) == .other,
               "unknown transport classifies as other")
+
+        // Sample-rate support matching (the -10868 root cause is a rate
+        // mismatch). Rates measured on forge: Scarlett 8i6 advertises
+        // 44100/48000/88200/96000/176400/192000; Elgato advertises 48000/96000.
+        let scarlettRates: [(Double, Double)] = [
+            (44100, 44100), (48000, 48000), (88200, 88200),
+            (96000, 96000), (176400, 176400), (192000, 192000)]
+        let elgatoRates: [(Double, Double)] = [(48000, 48000), (96000, 96000)]
+        check(rateSupported(48000, in: scarlettRates),
+              "Scarlett supports the 48kHz node rate (so reconciliation is possible)")
+        check(rateSupported(44100, in: scarlettRates),
+              "Scarlett supports its own 44.1kHz")
+        check(rateSupported(48000, in: elgatoRates),
+              "Elgato supports 48kHz")
+        check(!rateSupported(44100, in: elgatoRates),
+              "Elgato does not advertise 44.1kHz, so it is never forced there")
+        check(!rateSupported(48000, in: []),
+              "a device advertising no rates supports none")
+        check(rateSupported(48000, in: [(44100, 192000)]),
+              "a continuous range covers rates between its bounds")
 
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 16000,
