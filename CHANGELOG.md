@@ -45,6 +45,19 @@
   instead of freezing the app until the OS kills it. The on-disk model
   existence check also moved off the main actor so it no longer stutters the
   UI.
+- **Recording no longer fails with a format error (`-10868`) on sample-rate
+  mismatches**: `AVAudioEngine` rejects an input device whose hardware sample
+  rate differs from the rate its input node expects. This hit AirPods (24 kHz
+  Bluetooth HFP) and also wired interfaces like a Scarlett 8i6 running at
+  44.1 kHz, and the only workaround was switching the system input. Murmur now
+  reconciles the device's sample rate to the engine's before starting, so a
+  44.1 kHz interface is bumped to 48 kHz automatically. On top of that,
+  "System default" is now smart: it ranks inputs by connection type (wired
+  external over built-in over Bluetooth), so dictation stays on a reliable mic
+  even when AirPods seize the system default, and a closed-lid session keeps
+  working. If a start still fails, it fails over to the next-best mic and, if
+  all fail, shows an actionable message instead of the raw error. Settings
+  shows which device "System default" resolved to.
 
 ## v2.0.1 — 2026-08-25
 

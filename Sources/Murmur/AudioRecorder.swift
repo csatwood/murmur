@@ -80,11 +80,68 @@ final class AudioRecorder {
     func start() throws {
         guard !isRecording else { return }
 
-        // Recreate between recordings so changing devices cannot retain the
-        // previous input node's format or hardware route.
+        let devices = Self.inputMicrophones()
+        let candidates = Self.rankedCandidates(
+            uid: Settings.microphoneUID, devices: devices,
+            defaultDeviceID: Self.systemDefaultInputID())
+        guard !candidates.isEmpty else {
+            throw NSError(
+                domain: "Murmur", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "No microphone input available"])
+        }
+
+        // Try each candidate best-first, falling through on failure. A
+        // Bluetooth input (AirPods) raises -10868 at engine start; a wired mic
+        // does not, so a single failure recovers onto the next device rather
+        // than ending the recording. The last error is kept so an all-fail
+        // path surfaces something actionable.
+        var lastError: Error?
+        for candidate in candidates {
+            do {
+                try startOnDevice(candidate)
+                if candidate.transport == .bluetooth {
+                    dictationLog.info("mic route: recording on Bluetooth input \(candidate.name, privacy: .public); may be unreliable")
+                }
+                isRecording = true
+                return
+            } catch {
+                lastError = error
+                dictationLog.error("mic route: \(candidate.name, privacy: .public) failed to start: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        // Everything failed. If a Bluetooth device was in the mix, say so,
+        // since that is the likeliest cause and the user can act on it.
+        if candidates.contains(where: { $0.transport == .bluetooth }) {
+            throw Self.microphoneError(
+                "Couldn't start recording on any available microphone. A Bluetooth "
+                + "mic (like AirPods) can't be used for dictation; choose a wired or "
+                + "built-in mic in Settings → Dictation.")
+        }
+        throw lastError ?? Self.microphoneError("Couldn't start recording on any available microphone.")
+    }
+
+    /// One start attempt against a single device: route to it, install the tap,
+    /// and start the engine. Throws on any failure, leaving no tap or engine
+    /// running, so the caller can cleanly try the next candidate.
+    private func startOnDevice(_ microphone: Microphone) throws {
+        // Recreate between attempts so a prior device's format or hardware
+        // route cannot be retained.
         engine = AVAudioEngine()
         let input = engine.inputNode
-        try selectMicrophone(on: input)
+        try selectMicrophone(microphone.deviceID, on: input)
+
+        // Reconcile the device's hardware sample rate with the rate the engine's
+        // input node settles on. This is the real cause of the -10868
+        // (kAudioUnitErr_FormatNotSupported) failures: AVAudioEngine.start()
+        // rejects a device whose nominal rate differs from the node's rate. A
+        // Scarlett 8i6 sitting at 44.1 kHz fails; the same device at 48 kHz
+        // starts. AirPods at 24 kHz HFP are the same mismatch at a different
+        // rate. Setting the device to the node's rate before starting removes
+        // the mismatch; if the device cannot take that rate, the start below
+        // throws and the caller fails over to the next candidate.
+        Self.reconcileSampleRate(microphone.deviceID, toNodeRate: input.outputFormat(forBus: 0).sampleRate)
+
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(
@@ -151,7 +208,6 @@ final class AudioRecorder {
             try? FileManager.default.removeItem(at: url)
             throw error
         }
-        isRecording = true
     }
 
     /// Stops recording and returns the captured audio file URL,
@@ -219,6 +275,53 @@ final class AudioRecorder {
         let deviceID: AudioDeviceID
         let id: String // Persistent Core Audio UID, not the session's numeric ID.
         let name: String
+        let transport: Transport
+    }
+
+    /// How a microphone is connected, classified from the Core Audio
+    /// `kAudioDevicePropertyTransportType`. Drives failure prediction and the
+    /// smart-default ranking: a Bluetooth input is the one that raises
+    /// `kAudioUnitErr_FormatNotSupported` (-10868) when `AVAudioEngine` starts,
+    /// because macOS forces it into 24 kHz HFP mode the instant the mic
+    /// engages. A wired external mic is preferred over the built-in one so a
+    /// closed-lid session keeps working (the built-in mic is hardware-muted
+    /// when the lid is shut).
+    enum Transport {
+        case wired      // USB, Thunderbolt, and other cabled external inputs.
+        case builtIn    // The Mac's own microphone.
+        case bluetooth  // AirPods and other BT headsets: the -10868 risk.
+        case other      // Virtual, aggregate, unknown: treat as usable but low-priority.
+
+        /// Lower sorts first. Wired external is safest and survives a closed
+        /// lid; Bluetooth is last because it is the known failure case.
+        var preferenceRank: Int {
+            switch self {
+            case .wired: return 0
+            case .builtIn: return 1
+            case .other: return 2
+            case .bluetooth: return 3
+            }
+        }
+
+        /// Classify from the Core Audio transport-type constant.
+        static func classify(_ transportType: UInt32) -> Transport {
+            switch transportType {
+            case kAudioDeviceTransportTypeBluetooth,
+                 kAudioDeviceTransportTypeBluetoothLE:
+                return .bluetooth
+            case kAudioDeviceTransportTypeBuiltIn:
+                return .builtIn
+            case kAudioDeviceTransportTypeUSB,
+                 kAudioDeviceTransportTypeThunderbolt,
+                 kAudioDeviceTransportTypeFireWire,
+                 kAudioDeviceTransportTypePCI,
+                 kAudioDeviceTransportTypeDisplayPort,
+                 kAudioDeviceTransportTypeHDMI:
+                return .wired
+            default:
+                return .other
+            }
+        }
     }
 
     static func inputMicrophones() -> [Microphone] {
@@ -239,8 +342,24 @@ final class AudioRecorder {
                   !uid.isEmpty else { return nil }
             return Microphone(
                 deviceID: deviceID, id: uid,
-                name: deviceString(deviceID, selector: kAudioObjectPropertyName) ?? "Microphone")
+                name: deviceString(deviceID, selector: kAudioObjectPropertyName) ?? "Microphone",
+                transport: Transport.classify(deviceUInt32(deviceID, selector: kAudioDevicePropertyTransportType)))
         }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Read a `UInt32` device property (the transport type is one). Returns
+    /// `kAudioDeviceTransportTypeUnknown` when the read fails, so an
+    /// unreadable device classifies as `.other` rather than crashing.
+    private static func deviceUInt32(_ deviceID: AudioDeviceID,
+                                     selector: AudioObjectPropertySelector) -> UInt32 {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = kAudioDeviceTransportTypeUnknown
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr
+        else { return kAudioDeviceTransportTypeUnknown }
+        return value
     }
 
     private static func deviceString(_ deviceID: AudioDeviceID,
@@ -271,11 +390,67 @@ final class AudioRecorder {
         return device.deviceID
     }
 
+    /// The ordered list of microphones to try for one recording, best first.
+    ///
+    /// An explicit selection (non-empty `uid`) is honored first, then safe
+    /// fallbacks follow it so a Bluetooth pick that fails with -10868 can still
+    /// recover onto a wired mic. "System default" (empty `uid`) does NOT blindly
+    /// follow the macOS default: it ranks every input by transport, preferring a
+    /// wired external mic over the built-in one and using Bluetooth only as a
+    /// last resort. That is what keeps dictation on the Elgato even when AirPods
+    /// seize the system default input.
+    ///
+    /// `start()` walks this list, so a single failure is a fallback rather than a
+    /// dead recording.
+    static func rankedCandidates(
+        uid: String, devices: [Microphone], defaultDeviceID: AudioDeviceID
+    ) -> [Microphone] {
+        // Safe-first ordering: wired, then built-in, then other, then Bluetooth;
+        // stable within a rank by name so the choice is deterministic.
+        let bySafety = devices.sorted { a, b in
+            if a.transport.preferenceRank != b.transport.preferenceRank {
+                return a.transport.preferenceRank < b.transport.preferenceRank
+            }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        if uid.isEmpty {
+            return bySafety
+        }
+        // Explicit choice leads; the rest follow as failover, minus a duplicate.
+        guard let chosen = devices.first(where: { $0.id == uid }) else {
+            return bySafety
+        }
+        return [chosen] + bySafety.filter { $0.id != chosen.id }
+    }
+
+    /// The device "System default (smart)" would actually pick right now, for
+    /// display in Settings. `nil` when no input is available.
+    static func smartDefaultMicrophone() -> Microphone? {
+        rankedCandidates(uid: "", devices: inputMicrophones(),
+                         defaultDeviceID: AudioDeviceID(kAudioObjectUnknown)).first
+    }
+
     private static func microphoneError(_ message: String) -> NSError {
         NSError(domain: "Murmur", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
-    private func selectMicrophone(on input: AVAudioInputNode) throws {
+    /// Route the engine's input node to a specific Core Audio device.
+    private func selectMicrophone(_ deviceID: AudioDeviceID, on input: AVAudioInputNode) throws {
+        var id = deviceID
+        guard let unit = input.audioUnit else {
+            throw Self.microphoneError("Could not open the selected microphone.")
+        }
+        let status = AudioUnitSetProperty(
+            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+            &id, UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard status == noErr else {
+            throw Self.microphoneError("Could not select the microphone (audio error \(status)).")
+        }
+        dictationLog.info("mic route: selected device \(deviceID)")
+    }
+
+    /// The current macOS default input device ID, or unknown if unreadable.
+    private static func systemDefaultInputID() -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -284,18 +459,83 @@ final class AudioRecorder {
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         _ = AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &defaultID)
-        var deviceID = try Self.resolveMicrophone(
-            uid: Settings.microphoneUID, devices: Self.inputMicrophones(), defaultDeviceID: defaultID)
-        guard let unit = input.audioUnit else {
-            throw Self.microphoneError("Could not open the selected microphone.")
+        return defaultID
+    }
+
+    /// Align a device's hardware nominal sample rate with the rate the engine's
+    /// input node expects, so `AVAudioEngine.start()` does not reject the device
+    /// with `kAudioUnitErr_FormatNotSupported` (-10868).
+    ///
+    /// Measured on forge 2026-10-02: a Scarlett 8i6 at 44.1 kHz failed with
+    /// -10868 while the node reported 48 kHz; setting the device to 48 kHz made
+    /// the identical device start cleanly. AirPods at 24 kHz HFP are the same
+    /// mismatch at a different rate. This is the root cause behind the earlier
+    /// "Bluetooth" symptom.
+    ///
+    /// Best-effort: if the device does not support the node's rate, or the set
+    /// fails, this leaves the device as-is and the subsequent `engine.start()`
+    /// either succeeds anyway or throws, letting the caller fail over. The
+    /// read-and-compare avoids a needless rate change (and the audible click it
+    /// can cause) when the rates already match.
+    static func reconcileSampleRate(_ deviceID: AudioDeviceID, toNodeRate nodeRate: Double) {
+        guard nodeRate > 0 else { return }
+
+        var rateAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var current: Float64 = 0
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(deviceID, &rateAddr, 0, nil, &size, &current) == noErr
+        else { return }
+
+        // Already matching (within a tolerance; sample rates are exact in
+        // practice but compare as Double): nothing to do.
+        if abs(current - nodeRate) < 1.0 { return }
+
+        // Only set a rate the device actually advertises, so an unsupported
+        // value is never forced.
+        guard Self.deviceSupportsRate(deviceID, rate: nodeRate) else {
+            dictationLog.info("mic route: device \(deviceID) at \(current)Hz cannot take node rate \(nodeRate)Hz; leaving as-is")
+            return
         }
-        let status = AudioUnitSetProperty(
-            unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
-            &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size))
-        guard status == noErr else {
-            throw Self.microphoneError("Could not select the microphone (audio error \(status)).")
+
+        var target = Float64(nodeRate)
+        let status = AudioObjectSetPropertyData(
+            deviceID, &rateAddr, 0, nil, UInt32(MemoryLayout<Float64>.size), &target)
+        if status == noErr {
+            dictationLog.info("mic route: set device \(deviceID) sample rate \(current)Hz -> \(nodeRate)Hz to match engine")
+            // The hardware rate change is not instantaneous; give it a brief
+            // moment to settle before the engine starts, or the start can still
+            // observe the stale rate.
+            Thread.sleep(forTimeInterval: 0.1)
+        } else {
+            dictationLog.error("mic route: failed to set device \(deviceID) rate to \(nodeRate)Hz (status \(status))")
         }
-        dictationLog.info("mic route: selected device \(deviceID)")
+    }
+
+    /// Whether a device advertises support for a given nominal sample rate.
+    private static func deviceSupportsRate(_ deviceID: AudioDeviceID, rate: Double) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr, size > 0
+        else { return false }
+        let count = Int(size) / MemoryLayout<AudioValueRange>.size
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: count)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ranges) == noErr
+        else { return false }
+        return rateSupported(rate, in: ranges.map { ($0.mMinimum, $0.mMaximum) })
+    }
+
+    /// Pure range-matching behind `deviceSupportsRate`, split out so it is
+    /// testable without real hardware. Ranges are inclusive; a discrete rate
+    /// advertises as `min == max == rate`. A 1 Hz tolerance absorbs the
+    /// Double representation of exact rates like 44100 and 48000.
+    static func rateSupported(_ rate: Double, in ranges: [(Double, Double)]) -> Bool {
+        ranges.contains { rate >= $0.0 - 1.0 && rate <= $0.1 + 1.0 }
     }
 
     /// A device can be built-in and output-only (the Mac's speakers) — this
@@ -321,20 +561,70 @@ final class AudioRecorder {
         }
 
         let devices = [
-            Microphone(deviceID: 11, id: "builtin", name: "Built-in"),
-            Microphone(deviceID: 22, id: "usb", name: "USB")
+            Microphone(deviceID: 11, id: "builtin", name: "Built-in", transport: .builtIn),
+            Microphone(deviceID: 22, id: "usb", name: "USB", transport: .wired)
         ]
         check((try? resolveMicrophone(uid: "", devices: devices, defaultDeviceID: 22)) == 22,
               "system default uses external input instead of forcing built-in")
         check((try? resolveMicrophone(uid: "builtin", devices: devices, defaultDeviceID: 22)) == 11,
               "explicit microphone overrides system default")
         check((try? resolveMicrophone(uid: "usb", devices: [
-            Microphone(deviceID: 33, id: "usb", name: "USB")
+            Microphone(deviceID: 33, id: "usb", name: "USB", transport: .wired)
         ], defaultDeviceID: 11)) == 33, "saved UID survives device ID changes")
         check((try? resolveMicrophone(uid: "missing", devices: devices, defaultDeviceID: 22)) == nil,
               "disconnected selection fails instead of recording another microphone")
         check((try? resolveMicrophone(uid: "", devices: [], defaultDeviceID: 0)) == nil,
               "no input device fails clearly")
+
+        // Smart-default ranking: wired beats built-in beats Bluetooth, and a
+        // Bluetooth system default never wins over a wired mic (the -10868 case).
+        let mixed = [
+            Microphone(deviceID: 1, id: "airpods", name: "AirPods Pro", transport: .bluetooth),
+            Microphone(deviceID: 2, id: "builtin", name: "Built-in", transport: .builtIn),
+            Microphone(deviceID: 3, id: "elgato", name: "Elgato Wave XLR", transport: .wired)
+        ]
+        check(rankedCandidates(uid: "", devices: mixed, defaultDeviceID: 1).first?.id == "elgato",
+              "smart default prefers a wired mic even when Bluetooth is the system default")
+        check(rankedCandidates(uid: "", devices: mixed, defaultDeviceID: 1).last?.id == "airpods",
+              "smart default ranks Bluetooth last as the -10868 risk")
+        check(rankedCandidates(uid: "", devices: mixed, defaultDeviceID: 1).map(\.id)
+                == ["elgato", "builtin", "airpods"],
+              "smart default full order is wired, built-in, Bluetooth")
+        check(rankedCandidates(uid: "airpods", devices: mixed, defaultDeviceID: 1).first?.id == "airpods",
+              "an explicit Bluetooth choice is honored first")
+        check(rankedCandidates(uid: "airpods", devices: mixed, defaultDeviceID: 1).map(\.id)
+                == ["airpods", "elgato", "builtin"],
+              "explicit choice leads, then safe failover order follows without duplicating it")
+        check(rankedCandidates(uid: "", devices: [mixed[0]], defaultDeviceID: 1).map(\.id) == ["airpods"],
+              "Bluetooth is still used when it is the only input")
+        check(Transport.classify(kAudioDeviceTransportTypeBluetooth) == .bluetooth,
+              "Bluetooth transport classifies as bluetooth")
+        check(Transport.classify(kAudioDeviceTransportTypeUSB) == .wired,
+              "USB transport classifies as wired")
+        check(Transport.classify(kAudioDeviceTransportTypeBuiltIn) == .builtIn,
+              "built-in transport classifies as builtIn")
+        check(Transport.classify(kAudioDeviceTransportTypeUnknown) == .other,
+              "unknown transport classifies as other")
+
+        // Sample-rate support matching (the -10868 root cause is a rate
+        // mismatch). Rates measured on forge: Scarlett 8i6 advertises
+        // 44100/48000/88200/96000/176400/192000; Elgato advertises 48000/96000.
+        let scarlettRates: [(Double, Double)] = [
+            (44100, 44100), (48000, 48000), (88200, 88200),
+            (96000, 96000), (176400, 176400), (192000, 192000)]
+        let elgatoRates: [(Double, Double)] = [(48000, 48000), (96000, 96000)]
+        check(rateSupported(48000, in: scarlettRates),
+              "Scarlett supports the 48kHz node rate (so reconciliation is possible)")
+        check(rateSupported(44100, in: scarlettRates),
+              "Scarlett supports its own 44.1kHz")
+        check(rateSupported(48000, in: elgatoRates),
+              "Elgato supports 48kHz")
+        check(!rateSupported(44100, in: elgatoRates),
+              "Elgato does not advertise 44.1kHz, so it is never forced there")
+        check(!rateSupported(48000, in: []),
+              "a device advertising no rates supports none")
+        check(rateSupported(48000, in: [(44100, 192000)]),
+              "a continuous range covers rates between its bounds")
 
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32, sampleRate: 16000,
