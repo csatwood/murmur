@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-09
+
+- Fall back to CommandLineTools SDKs when the active Xcode SDK directory has no usable macOS 26 match. Preserve active-directory priority, explicit `--sdk` overrides, and the warning when neither location has a match. Relates to #9.
+- Add a hermetic SDK-selection regression matrix that stops before building or replacing the app.
+
 ## Personal fork: selected upstream corrections (build 4.3)
 
 - Protect known user vocabulary during Harper grammar checking using the matching upstream Rust archive and headers.

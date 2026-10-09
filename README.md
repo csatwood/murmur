@@ -132,10 +132,16 @@ command-line tools have since updated to a newer default SDK (for example macOS
 fails with `plugin for module 'SwiftUIMacros' not found` on every `@State`.
 
 `make_app.sh` handles this: when you do not pass `--sdk` and the default SDK is
-newer than macOS 26, it auto-selects the newest installed macOS 26 SDK. A
+newer than macOS 26, it auto-selects the newest installed macOS 26 SDK in the
+active SDK directory. If that directory has no usable match, it searches
+`/Library/Developer/CommandLineTools/SDKs` instead. A
 machine whose default SDK already matches is unaffected. If no macOS 26 SDK is
 installed it warns and falls through, so pass `--sdk` or install the matching
 SDK in that case.
+
+Run `python3 -B -m unittest discover -s Tests -p 'test_sdk_selection.py' -v`
+for the hermetic SDK-selection matrix. It uses mock SDK directories and commands
+and stops before compiling or replacing the app.
 
 ### One-time permissions
 

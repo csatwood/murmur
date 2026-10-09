@@ -14,7 +14,8 @@ cd "$(dirname "$0")/.."
 # installed SDK that matches the target avoids it.
 #
 # So when the caller has not already chosen an SDK, and the default SDK is newer
-# than the target, auto-select the newest installed macOS 26 SDK. An explicit
+# than the target, auto-select the newest installed macOS 26 SDK in the active
+# SDK directory, falling back to CommandLineTools if it has no match. An explicit
 # --sdk always wins, and a machine whose default already matches is unchanged.
 TARGET_SDK_MAJOR=26
 
@@ -38,14 +39,19 @@ if [ "$caller_set_sdk" -eq 0 ]; then
         sdk_dir="$(dirname "$default_sdk_path")"
         best_sdk=""
         best_ver=""
-        for candidate in "$sdk_dir"/MacOSX${TARGET_SDK_MAJOR}*.sdk; do
-            [ -d "$candidate" ] || continue
-            ver="$(/usr/libexec/PlistBuddy -c 'Print Version' "$candidate/SDKSettings.plist" 2>/dev/null || true)"
-            [ -n "$ver" ] || continue
-            if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
-                best_sdk="$candidate"
-                best_ver="$ver"
-            fi
+        # Full Xcode may ship only a newer SDK while CommandLineTools still
+        # has the target SDK. Keep active-directory matches preferred.
+        for search_dir in "$sdk_dir" "/Library/Developer/CommandLineTools/SDKs"; do
+            for candidate in "$search_dir"/MacOSX${TARGET_SDK_MAJOR}*.sdk; do
+                [ -d "$candidate" ] || continue
+                ver="$(/usr/libexec/PlistBuddy -c 'Print Version' "$candidate/SDKSettings.plist" 2>/dev/null || true)"
+                [ -n "$ver" ] || continue
+                if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -1)" = "$ver" ]; then
+                    best_sdk="$candidate"
+                    best_ver="$ver"
+                fi
+            done
+            [ -z "$best_sdk" ] || break
         done
         if [ -n "$best_sdk" ]; then
             echo "Default SDK is $default_sdk_version but the app targets macOS $TARGET_SDK_MAJOR;" >&2
